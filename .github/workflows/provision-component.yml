@@ -9,6 +9,22 @@ on:
       component:
         required: true
         type: string
+      recover_tainted_cluster:
+        required: false
+        default: false
+        type: boolean
+      reset_cluster:
+        required: false
+        default: false
+        type: boolean
+      import_cluster_resources:
+        required: false
+        default: false
+        type: boolean
+      import_node_pool_only:
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -23,8 +39,45 @@ jobs:
       PROJECT_ID: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_PROJECT_ID || vars.GCP_PRODUCTION_PROJECT_ID }}
       WIF_PROVIDER: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
       TERRAFORM_SA: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_TERRAFORM_SA || vars.GCP_PRODUCTION_TERRAFORM_SA }}
+      REGION: europe-west3
     steps:
       - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        if: (inputs.reset_cluster || inputs.import_cluster_resources) && inputs.component == 'cluster'
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TERRAFORM_SA }}
+      - uses: google-github-actions/setup-gcloud@v3
+        if: (inputs.reset_cluster || inputs.import_cluster_resources) && inputs.component == 'cluster'
+      - name: Delete reset target cluster
+        if: inputs.reset_cluster && inputs.component == 'cluster'
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          gcloud container clusters delete "order-${ENVIRONMENT}-${REGION}-gke" \
+            --project="$PROJECT_ID" --region="$REGION" --quiet
+      - name: Create and import fresh cluster resources
+        if: inputs.import_cluster_resources && inputs.component == 'cluster'
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          cluster="order-${ENVIRONMENT}-${REGION}-gke"
+          node_sa="${cluster}@${PROJECT_ID}.iam.gserviceaccount.com"
+          gcloud container node-pools create application \
+            --cluster="$cluster" --project="$PROJECT_ID" --region="$REGION" \
+            --node-locations="${REGION}-a,${REGION}-b" \
+            --num-nodes=1 \
+            --machine-type=e2-standard-2 --disk-type=pd-standard --disk-size=50 \
+            --service-account="$node_sa" --scopes=cloud-platform \
+            --enable-autoscaling --min-nodes=1 --max-nodes=2 \
+            --location-policy=BALANCED --enable-autorepair --enable-autoupgrade \
+            --workload-metadata=GKE_METADATA \
+            --shielded-secure-boot --shielded-integrity-monitoring \
+            --node-labels="application=order-service,environment=${ENVIRONMENT},region=${REGION},managed_by=terragrunt,workload=order-service" \
+            --tags="${cluster}-gke-node"
       - name: Select isolated Terragrunt state
         id: target
         shell: bash
@@ -47,3 +100,6 @@ jobs:
           project_id: ${{ env.PROJECT_ID }}
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.TERRAFORM_SA }}
+          untaint_addresses: ${{ inputs.component == 'cluster' && inputs.recover_tainted_cluster && 'module.gke.google_container_cluster.this' || '' }}
+          state_rm_addresses: ${{ inputs.component == 'cluster' && inputs.reset_cluster && 'module.gke.google_container_cluster.this' || '' }}
+          state_imports: ${{ inputs.component == 'cluster' && inputs.import_node_pool_only && format('module.gke.google_container_node_pool.application=projects/{0}/locations/{1}/clusters/order-{2}-{1}-gke/nodePools/application', env.PROJECT_ID, env.REGION, inputs.environment) || inputs.component == 'cluster' && inputs.import_cluster_resources && format('module.gke.google_container_cluster.this=projects/{0}/locations/{1}/clusters/order-{2}-{1}-gke,module.gke.google_container_node_pool.application=projects/{0}/locations/{1}/clusters/order-{2}-{1}-gke/nodePools/application', env.PROJECT_ID, env.REGION, inputs.environment) || '' }}

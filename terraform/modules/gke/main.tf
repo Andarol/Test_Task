@@ -33,6 +33,7 @@ resource "google_container_cluster" "this" {
 
   initial_node_count       = 1
   remove_default_node_pool = true
+  skip_node_pool_refresh   = true
   deletion_protection      = true
 
   # GKE must create a temporary default pool before removing it. Keep that
@@ -125,6 +126,9 @@ resource "google_container_cluster" "this" {
 
   lifecycle {
     prevent_destroy = true
+    # Worker topology is managed by google_container_node_pool.application.
+    # Changing this default must never replace an existing regional control plane.
+    ignore_changes = [node_config, node_locations]
   }
 }
 

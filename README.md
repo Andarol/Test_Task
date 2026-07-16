@@ -20,7 +20,7 @@ flowchart TB
   VPN --> ProdAPI
 
   subgraph Staging["Staging — europe-west3"]
-    StageAPI --> StageWorkers["Workers in zones a + b + c"]
+    StageAPI --> StageWorkers["Workers in zones a + b"]
     StageWorkers --> StageArgo["Argo CD"]
     StageWorkers --> StageRancher["Rancher"]
     StageWorkers --> StageApp["order-service custom chart"]
@@ -29,7 +29,7 @@ flowchart TB
   end
 
   subgraph Production["Production — europe-west3"]
-    ProdAPI --> ProdWorkers["Workers in zones a + b + c"]
+    ProdAPI --> ProdWorkers["Workers in zones a + b"]
     ProdWorkers --> ProdArgo["Argo CD"]
     ProdWorkers --> ProdRancher["Rancher"]
   end
@@ -38,7 +38,7 @@ flowchart TB
   Git --> ProdArgo
 ```
 
-GKE manages the regional control planes. Terraform manages a separate autoscaling worker pool spread across three zones. The cluster state is long-lived and is not touched by normal application releases.
+GKE manages the regional control planes. Terraform manages a separate autoscaling worker pool spread across two zones. The cluster state is long-lived and is not touched by normal application releases.
 
 ## Repository layout
 

@@ -9,8 +9,8 @@ output "cluster_location" {
 }
 
 output "node_locations" {
-  value       = google_container_cluster.this.node_locations
-  description = "Zones used by the regional cluster."
+  value       = var.node_locations
+  description = "Zones used by the separately managed application worker pool."
 }
 
 output "private_endpoint" {

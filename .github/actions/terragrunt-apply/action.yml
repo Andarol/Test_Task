@@ -16,6 +16,18 @@ inputs:
   service_account:
     description: Terraform service account email
     required: true
+  untaint_addresses:
+    description: Optional newline-separated Terraform addresses to recover before apply
+    required: false
+    default: ""
+  state_rm_addresses:
+    description: Optional newline-separated Terraform addresses to forget after an external reset
+    required: false
+    default: ""
+  state_imports:
+    description: Optional newline-separated Terraform address=ID imports after an external create
+    required: false
+    default: ""
   attempts:
     description: Apply attempts per component
     required: false
@@ -43,6 +55,9 @@ runs:
         PROJECT_ID: ${{ inputs.project_id }}
         GCP_PROJECT_ID: ${{ inputs.project_id }}
         WORKING_DIRECTORIES: ${{ inputs.working_directories }}
+        UNTAINT_ADDRESSES: ${{ inputs.untaint_addresses }}
+        STATE_RM_ADDRESSES: ${{ inputs.state_rm_addresses }}
+        STATE_IMPORTS: ${{ inputs.state_imports }}
         APPLY_ATTEMPTS: ${{ inputs.attempts }}
         RETRY_DELAY_SECONDS: ${{ inputs.retry_delay_seconds }}
         TF_IN_AUTOMATION: "true"
@@ -58,6 +73,30 @@ runs:
 
         while IFS= read -r directory; do
           [ -n "$directory" ] || continue
+
+          while IFS= read -r address; do
+            [ -n "$address" ] || continue
+            set +e
+            untaint_output="$(cd "$GITHUB_WORKSPACE/$directory" && terragrunt run -- untaint "$address" 2>&1)"
+            untaint_status=$?
+            set -e
+            printf '%s\n' "$untaint_output"
+            if [ "$untaint_status" -ne 0 ] && [[ "$untaint_output" != *"is not tainted"* ]]; then
+              exit "$untaint_status"
+            fi
+          done <<< "$UNTAINT_ADDRESSES"
+
+          while IFS= read -r address; do
+            [ -n "$address" ] || continue
+            (cd "$GITHUB_WORKSPACE/$directory" && terragrunt run -- state rm "$address")
+          done <<< "$STATE_RM_ADDRESSES"
+
+          while IFS='=' read -r address resource_id; do
+            [ -n "$address" ] || continue
+            [ -n "$resource_id" ] || { echo "Invalid state import: $address" >&2; exit 2; }
+            (cd "$GITHUB_WORKSPACE/$directory" && terragrunt run -- import "$address" "$resource_id")
+          done < <(printf '%s\n' "$STATE_IMPORTS" | tr ',' '\n')
+
           attempt=1
           while true; do
             if (cd "$GITHUB_WORKSPACE/$directory" && terragrunt run -- apply -lock-timeout=5m -auto-approve); then

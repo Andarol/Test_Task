@@ -28,7 +28,7 @@ dependency "cluster" {
   config_path = "../${local.environment.locals.region}/cluster"
   mock_outputs = {
     neg_name           = "order-service-${local.environment.locals.environment}-europe-west3"
-    gke_node_locations = ["europe-west3-a", "europe-west3-b", "europe-west3-c"]
+    gke_node_locations = ["europe-west3-a", "europe-west3-b"]
   }
   mock_outputs_allowed_terraform_commands = ["validate"]
 }

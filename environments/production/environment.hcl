@@ -22,12 +22,12 @@ locals {
 
   regions = {
     europe-west3 = {
-      zones              = ["europe-west3-a", "europe-west3-b", "europe-west3-c"]
+      zones              = ["europe-west3-a", "europe-west3-b"]
       node_cidr          = "10.110.0.0/20"
       pod_cidr           = "10.120.0.0/16"
       service_cidr       = "10.121.0.0/20"
       master_cidr        = "172.17.0.0/28"
-      gke_machine_type   = "e2-standard-4"
+      gke_machine_type   = "e2-standard-2"
       min_nodes_per_zone = 1
       max_nodes_per_zone = 3
       capacity_scaler    = 1.0

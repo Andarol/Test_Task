@@ -79,7 +79,7 @@ variable "trusted_ingress_cidrs" {
 variable "gke_machine_type" {
   type        = string
   description = "GKE application node machine type."
-  default     = "e2-standard-4"
+  default     = "e2-standard-2"
 }
 
 variable "gke_node_locations" {

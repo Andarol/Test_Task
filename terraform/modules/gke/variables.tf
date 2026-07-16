@@ -54,7 +54,7 @@ variable "node_network_tag" {
 variable "machine_type" {
   type        = string
   description = "Application node machine type."
-  default     = "e2-standard-4"
+  default     = "e2-standard-2"
 }
 
 variable "node_locations" {
@@ -62,8 +62,8 @@ variable "node_locations" {
   description = "Zones used by the regional GKE cluster and application node pool."
 
   validation {
-    condition     = length(var.node_locations) == 3
-    error_message = "The application node pool must use exactly three zones."
+    condition     = length(var.node_locations) == 2
+    error_message = "The application node pool must use exactly two zones."
   }
 }
 
