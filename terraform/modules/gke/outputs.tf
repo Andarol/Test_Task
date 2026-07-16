@@ -1,25 +1,29 @@
 output "cluster_name" {
-  value       = google_container_cluster.this.name
-  description = "GKE cluster name."
+  value = google_container_cluster.this.name
 }
 
 output "cluster_location" {
-  value       = google_container_cluster.this.location
-  description = "GKE cluster location."
+  value = google_container_cluster.this.location
 }
 
-output "node_locations" {
-  value       = var.node_locations
-  description = "Zones used by the separately managed application worker pool."
+output "cluster_endpoint" {
+  value     = google_container_cluster.this.endpoint
+  sensitive = true
 }
 
-output "private_endpoint" {
-  value       = google_container_cluster.this.private_cluster_config[0].private_endpoint
-  description = "Private Kubernetes API endpoint."
-  sensitive   = true
+output "cluster_ca_certificate" {
+  value     = google_container_cluster.this.master_auth[0].cluster_ca_certificate
+  sensitive = true
 }
 
 output "node_service_account" {
-  value       = google_service_account.nodes.email
-  description = "GKE node service account."
+  value = local.node_service_account
+}
+
+output "application_node_pool" {
+  value = google_container_node_pool.application.name
+}
+
+output "order_service_workload_service_account" {
+  value = google_service_account.order_service_workload.email
 }

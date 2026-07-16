@@ -1,0 +1,46 @@
+image:
+  repository: europe-west3-docker.pkg.dev/project-03272afe-c622-4c2b-868/order-service/order-service
+  tag: sha-placeholder
+  pullPolicy: IfNotPresent
+
+projectId: project-03272afe-c622-4c2b-868
+region: europe-west3
+negName: order-service-staging-europe-west3
+
+serviceAccount:
+  gcpServiceAccount: order-staging-app@project-03272afe-c622-4c2b-868.iam.gserviceaccount.com
+
+replicaCount: 4
+cacheTTL: 60s
+
+database:
+  host: 10.90.0.2
+  port: 5432
+  name: orders
+  user: order_service
+  cidr: 10.90.0.0/16
+  secretId: order-staging-postgres-password
+
+redis:
+  host: 10.90.40.156
+  port: 6378
+  authSecretId: order-staging-redis-auth
+  caSecretId: order-staging-redis-ca
+
+billingApi:
+  cidr: 203.0.113.10/32
+  port: 443
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  minReplicas: 4
+  maxReplicas: 15
+  cpuUtilization: 65
+  memoryUtilization: 75

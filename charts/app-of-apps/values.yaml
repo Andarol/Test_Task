@@ -4,3 +4,5 @@ environment: staging
 region: europe-west3
 orderService:
   enabled: false
+observability:
+  enabled: false

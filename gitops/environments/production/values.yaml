@@ -3,6 +3,9 @@ targetRevision: main
 environment: production
 region: europe-west3
 
+observability:
+  enabled: false
+
 # Enabled by the application release workflow after production foundation outputs
 # have been recorded here. Argo CD will not create an invalid workload meanwhile.
 orderService:

@@ -1,0 +1,31 @@
+name: Smoke test order-service
+description: Validate order-service health endpoints through a local port-forward.
+inputs:
+  namespace:
+    description: Kubernetes namespace.
+    required: false
+    default: order-service
+  service-name:
+    description: Kubernetes service name.
+    required: false
+    default: order-service
+runs:
+  using: composite
+  steps:
+    - name: Check /healthz and /readyz
+      shell: bash
+      env:
+        NAMESPACE: ${{ inputs.namespace }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+      run: |
+        kubectl -n "${NAMESPACE}" port-forward "service/${SERVICE_NAME}" 18080:80 >"${RUNNER_TEMP}/port-forward.log" 2>&1 &
+        port_forward_pid=$!
+        trap 'kill "${port_forward_pid}" 2>/dev/null || true' EXIT
+
+        for path in healthz readyz; do
+          curl --fail --silent --show-error \
+            --retry 20 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            "http://127.0.0.1:18080/${path}"
+        done

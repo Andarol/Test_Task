@@ -1,11 +1,14 @@
 image:
   repository: ""
-  tag: latest
+  tag: sha-placeholder
   pullPolicy: IfNotPresent
 
 projectId: ""
 region: europe-west3
 negName: order-service
+
+serviceAccount:
+  gcpServiceAccount: ""
 
 replicaCount: 4
 cacheTTL: 60s
@@ -23,6 +26,10 @@ redis:
   port: 6378
   authSecretId: ""
   caSecretId: ""
+
+billingApi:
+  cidr: 203.0.113.10/32
+  port: 443
 
 resources:
   requests:

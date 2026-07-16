@@ -1,89 +1,53 @@
 resource "random_password" "database" {
-  length           = 32
-  special          = true
-  override_special = "_-!@#%"
-}
-
-resource "google_secret_manager_secret" "database_password" {
-  project   = var.project_id
-  secret_id = "${var.name}-password"
-
-  replication {
-    auto {}
-  }
-
-  labels = var.labels
-}
-
-resource "google_secret_manager_secret_version" "database_password" {
-  secret      = google_secret_manager_secret.database_password.id
-  secret_data = random_password.database.result
+  length  = 32
+  special = true
 }
 
 resource "google_sql_database_instance" "this" {
   project             = var.project_id
-  name                = var.name
-  region              = var.region
+  name                = var.instance_name
   database_version    = "POSTGRES_15"
+  region              = var.region
   deletion_protection = true
-
-  settings {
-    tier              = var.database_tier
-    availability_type = "REGIONAL"
-    disk_type         = "PD_SSD"
-    disk_size         = var.disk_size_gb
-    disk_autoresize   = true
-    user_labels       = var.labels
-
-    ip_configuration {
-      ipv4_enabled                                  = false
-      private_network                               = var.network_id
-      allocated_ip_range                            = var.allocated_ip_range
-      enable_private_path_for_google_cloud_services = true
-      ssl_mode                                      = "ENCRYPTED_ONLY"
-    }
-
-    backup_configuration {
-      enabled                        = true
-      start_time                     = "03:00"
-      point_in_time_recovery_enabled = true
-      transaction_log_retention_days = 7
-
-      backup_retention_settings {
-        retained_backups = var.backup_retention_count
-        retention_unit   = "COUNT"
-      }
-    }
-
-    insights_config {
-      query_insights_enabled  = true
-      query_plans_per_minute  = 5
-      query_string_length     = 2048
-      record_application_tags = true
-      record_client_address   = false
-    }
-
-    maintenance_window {
-      day          = 7
-      hour         = 4
-      update_track = "stable"
-    }
-
-    password_validation_policy {
-      min_length                  = 16
-      complexity                  = "COMPLEXITY_DEFAULT"
-      disallow_username_substring = true
-      enable_password_policy      = true
-    }
-  }
 
   lifecycle {
     prevent_destroy = true
   }
 
+  settings {
+    tier              = var.tier
+    availability_type = "REGIONAL"
+    disk_type         = "PD_SSD"
+    disk_size         = 20
+    disk_autoresize   = true
+
+    backup_configuration {
+      enabled                        = true
+      point_in_time_recovery_enabled = true
+      transaction_log_retention_days = 7
+
+      backup_retention_settings {
+        retained_backups = var.backup_retained_count
+        retention_unit   = "COUNT"
+      }
+    }
+
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = var.network
+      ssl_mode        = "ENCRYPTED_ONLY"
+    }
+
+    insights_config {
+      query_insights_enabled  = true
+      query_string_length     = 1024
+      record_application_tags = true
+      record_client_address   = false
+    }
+  }
 }
 
-resource "google_sql_database" "application" {
+resource "google_sql_database" "this" {
   project  = var.project_id
   name     = var.database_name
   instance = google_sql_database_instance.this.name
@@ -91,7 +55,27 @@ resource "google_sql_database" "application" {
 
 resource "google_sql_user" "application" {
   project  = var.project_id
-  name     = var.database_user
+  name     = "order-service"
   instance = google_sql_database_instance.this.name
   password = random_password.database.result
+}
+
+resource "google_secret_manager_secret" "database_credentials" {
+  project   = var.project_id
+  secret_id = "${var.instance_name}-credentials"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "database_credentials" {
+  secret = google_secret_manager_secret.database_credentials.id
+  secret_data = jsonencode({
+    username = google_sql_user.application.name
+    password = random_password.database.result
+    database = google_sql_database.this.name
+    host     = google_sql_database_instance.this.private_ip_address
+    port     = 5432
+  })
 }

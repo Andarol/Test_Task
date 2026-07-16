@@ -1,86 +1,64 @@
 variable "project_id" {
-  type        = string
-  description = "Google Cloud project ID."
+  type = string
 }
 
-variable "name" {
-  type        = string
-  description = "Cluster name."
+variable "cluster_name" {
+  type = string
 }
 
 variable "region" {
-  type        = string
-  description = "GKE control-plane region."
+  type = string
 }
 
-variable "network_id" {
-  type        = string
-  description = "VPC network ID."
+variable "zones" {
+  type = list(string)
 }
 
-variable "subnetwork_id" {
-  type        = string
-  description = "GKE subnetwork ID."
+variable "network" {
+  type = string
 }
 
-variable "pod_range_name" {
-  type        = string
-  description = "Secondary range name for pods."
+variable "subnetwork" {
+  type = string
 }
 
-variable "service_range_name" {
-  type        = string
-  description = "Secondary range name for Services."
+variable "pods_range_name" {
+  type = string
+}
+
+variable "services_range_name" {
+  type = string
 }
 
 variable "master_cidr" {
-  type        = string
-  description = "Private GKE control-plane /28."
+  type = string
 }
 
 variable "master_authorized_networks" {
-  type = list(object({
-    cidr_block   = string
-    display_name = string
-  }))
-  description = "Networks allowed to reach the private control-plane endpoint."
+  type = list(string)
 }
 
-variable "node_network_tag" {
+variable "node_machine_type" {
+  type    = string
+  default = "e2-medium"
+}
+
+variable "node_min_count" {
+  type    = number
+  default = 1
+}
+
+variable "node_max_count" {
+  type    = number
+  default = 4
+}
+
+variable "node_service_account" {
+  type    = string
+  default = null
+}
+
+variable "workload_service_account_id" {
   type        = string
-  description = "Network tag for application nodes."
-}
-
-variable "machine_type" {
-  type        = string
-  description = "Application node machine type."
-  default     = "e2-standard-2"
-}
-
-variable "node_locations" {
-  type        = list(string)
-  description = "Zones used by the regional GKE cluster and application node pool."
-
-  validation {
-    condition     = length(var.node_locations) == 2
-    error_message = "The application node pool must use exactly two zones."
-  }
-}
-
-variable "min_nodes_per_zone" {
-  type        = number
-  description = "Minimum application nodes per zone."
-  default     = 1
-}
-
-variable "max_nodes_per_zone" {
-  type        = number
-  description = "Maximum application nodes per zone."
-  default     = 3
-}
-
-variable "labels" {
-  type        = map(string)
-  description = "Resource labels."
-  default     = {}
+  description = "Google service account id used by the order-service Kubernetes service account through Workload Identity."
 }

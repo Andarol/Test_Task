@@ -55,7 +55,7 @@ spec:
           port: {{ .Values.redis.port }}
     - to:
         - ipBlock:
-            cidr: 0.0.0.0/0
+            cidr: {{ .Values.billingApi.cidr | quote }}
       ports:
         - protocol: TCP
-          port: 443
+          port: {{ .Values.billingApi.port }}

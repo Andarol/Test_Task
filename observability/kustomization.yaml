@@ -3,4 +3,5 @@ kind: Kustomization
 resources:
   - slo.yaml
   - alerts.yaml
+  - alertmanager.yaml
   - podmonitoring.yaml

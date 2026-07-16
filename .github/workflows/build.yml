@@ -1,0 +1,212 @@
+name: Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  GCP_REGION: europe-west3
+  ARTIFACT_REGISTRY_REPOSITORY: order-service
+  IMAGE_NAME: order-service
+  TERRAGRUNT_VERSION: 0.76.7
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: [self-hosted, linux, gke-private]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run lint checks
+        uses: ./.github/actions/lint
+
+  test:
+    name: Test
+    runs-on: [self-hosted, linux, gke-private]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        uses: ./.github/actions/test
+
+  terraform-plan-pr:
+    name: Terraform plan for PR
+    if: github.event_name == 'pull_request'
+    needs:
+      - lint
+      - test
+    runs-on: [self-hosted, linux, gke-private]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: staging
+            working-directory: environments/staging/europe-west3
+          - environment: production
+            working-directory: environments/production/europe-west3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_TERRAFORM_SERVICE_ACCOUNT }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_amd64" \
+            -o "${RUNNER_TEMP}/bin/terragrunt"
+          chmod +x "${RUNNER_TEMP}/bin/terragrunt"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Terraform plan
+        id: plan
+        continue-on-error: true
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          GKE_ADMIN_CIDR: ${{ vars.GKE_ADMIN_CIDR }}
+          TG_WORKING_DIR: ${{ matrix.working-directory }}
+        run: |
+          set +e
+          terragrunt run --working-dir "${TG_WORKING_DIR}" plan -input=false -no-color > "${RUNNER_TEMP}/terraform-plan.txt" 2>&1
+          status=$?
+          set -e
+
+          {
+            echo "exitcode=${status}"
+            echo "summary<<EOF"
+            tail -c 60000 "${RUNNER_TEMP}/terraform-plan.txt"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+          exit "${status}"
+
+      - name: Post plan comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+          PLAN_OUTPUT: ${{ steps.plan.outputs.summary }}
+          PLAN_EXIT_CODE: ${{ steps.plan.outputs.exitcode }}
+        with:
+          script: |
+            const marker = `<!-- terraform-plan-${process.env.ENVIRONMENT} -->`;
+            const status = process.env.PLAN_EXIT_CODE === '0' ? 'succeeded' : 'failed';
+            const body = `${marker}
+            ### Terraform plan: ${process.env.ENVIRONMENT}
+
+            Plan ${status}.
+
+            <details>
+            <summary>Show plan output</summary>
+
+            \`\`\`text
+            ${process.env.PLAN_OUTPUT || 'No plan output captured.'}
+            \`\`\`
+
+            </details>`;
+
+            const {owner, repo} = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.rest.issues.listComments({owner, repo, issue_number});
+            const existing = comments.data.find((comment) => comment.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body});
+            } else {
+              await github.rest.issues.createComment({owner, repo, issue_number, body});
+            }
+
+      - name: Fail if plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  build-image:
+    name: Build and push image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - lint
+      - test
+    runs-on: [self-hosted, linux, gke-private]
+    outputs:
+      image-repository: ${{ steps.image.outputs.repository }}
+      image-tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_ARTIFACT_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push SHA-tagged image
+        id: image
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          image_repository="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPOSITORY}/${IMAGE_NAME}"
+          docker build --tag "${image_repository}:${IMAGE_TAG}" .
+          docker push "${image_repository}:${IMAGE_TAG}"
+
+          echo "repository=${image_repository}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+
+  dispatch-stage-deploy:
+    name: Dispatch stage deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-image
+    runs-on: [self-hosted, linux, gke-private]
+    steps:
+      - name: Trigger deploy workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yml',
+              ref: context.ref.replace('refs/heads/', ''),
+              inputs: {
+                environment: 'stage',
+                image_repository: '${{ needs.build-image.outputs.image-repository }}',
+                image_tag: '${{ needs.build-image.outputs.image-tag }}'
+              }
+            });

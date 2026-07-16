@@ -1,182 +1,115 @@
-# Order Service — private GKE with independent infrastructure and GitOps releases
+# Order service infrastructure
 
-The repository has three deliberately separate lifecycles:
+This repository contains a small, reviewable GCP platform for the SRE assessment. It is intentionally limited to one region (`europe-west3`) and two zones so the design can be demonstrated without a large footprint.
 
-1. `environments/bootstrap/runner` creates the shared VPN and Artifact Registry repositories once.
-2. `.github/workflows/provision-infrastructure.yml` applies exactly one long-lived Terragrunt component selected by the operator: `foundation`, `cluster`, `gitops`, or `global`.
-3. `.github/workflows/build-runner.yml` builds a commit-versioned ARC runner image on a GitHub-hosted builder.
-4. `.github/workflows/deploy.yml` runs on an ephemeral ARC runner, builds and deploys staging, and `.github/workflows/promote-production.yml` manually promotes the tested immutable image to production. Argo CD then reconciles the custom Helm chart from Git.
-
-An application release never applies Terraform and never calls `kubectl apply`. No container is started on the operator laptop; ARC creates a short-lived runner pod inside the private GKE cluster only when a job is queued.
-
-## Architecture
-
-```mermaid
-flowchart TB
-  Admin["Administrator"] -->|"one WireGuard VPN"| VPN["WireGuard gateway"]
-  Builder["GitHub-hosted image builder"] --> RunnerRegistry["Runner image repository"]
-  VPN --> StageAPI
-  VPN --> ProdAPI
-
-  subgraph Staging["Staging — europe-west3"]
-    StageAPI --> StageWorkers["Workers in zones a + b"]
-    StageWorkers --> StageArgo["Argo CD"]
-    StageWorkers --> StageRancher["Rancher"]
-    StageWorkers --> StageARC["ARC runner scale set"]
-    StageWorkers --> StageApp["order-service custom chart"]
-    StageApp --> StageDB["Regional HA Cloud SQL"]
-    StageApp --> StageRedis["Redis cache"]
-  end
-
-  subgraph Production["Production — europe-west3"]
-    ProdAPI --> ProdWorkers["Workers in zones a + b"]
-    ProdWorkers --> ProdArgo["Argo CD"]
-    ProdWorkers --> ProdRancher["Rancher"]
-    ProdWorkers --> ProdARC["ARC runner scale set"]
-  end
-
-  Git["gitops/environments/ENV/values.yaml"] --> StageArgo
-  Git --> ProdArgo
-  StageARC --> Registry["Application Artifact Registry"]
-  Builder --> Registry
-```
-
-GKE manages the regional control planes. Terraform manages a separate autoscaling worker pool spread across two zones. The cluster state is long-lived and is not touched by normal application releases.
-
-## Repository layout
+## Layout
 
 ```text
-environments/
-├── bootstrap/runner/terragrunt.hcl          # one-time VPN/registry bootstrap
-├── staging/
-│   ├── foundation/terragrunt.hcl            # Cloud SQL and Redis
-│   ├── europe-west3/
-│   │   ├── cluster/terragrunt.hcl           # GKE control plane and workers
-│   │   └── gitops/terragrunt.hcl            # Rancher, Argo CD, root Application
-│   └── global/terragrunt.hcl                # load balancer and WAF
-└── production/                              # same isolated states
-
-terraform/stacks/
-├── management/
-├── foundation/
-├── cluster/
-├── gitops/
-└── global/
-
-gitops/environments/
-├── staging/values.yaml
-└── production/values.yaml
-
-charts/
-├── app-of-apps/
-└── order-service/
+terraform/modules/networking   custom VPC, GKE/SQL subnets, NAT, firewall, PSA
+terraform/modules/gke           private regional GKE, Workload Identity, Binary Authorization
+terraform/modules/cloudsql      private PostgreSQL 15 HA, backups, Secret Manager credentials
+terraform/modules/bastion       separate IAP-only Compute Engine bastion
+terraform/modules/platform      Argo CD and Rancher Helm releases
+terraform/stacks/infrastructure composition of the infrastructure modules
+terraform/stacks/platform       cluster management applications
+environments/<env>/europe-west3 Terragrunt entry points and isolated GCS prefixes
+observability/                  SLO recording rules, alerts, Alertmanager routing, dashboard
+.github/runner-image            custom self-hosted runner image with deployment tooling
+.github/workflows/runner-*.yml   runner image build and ARC runner deployment
+.github/workflows/build.yml      app lint, test, image build, and staging dispatch
+.github/workflows/deploy.yml     environment deployment workflow
 ```
 
-For compatibility with the already-created infrastructure, the renamed `cluster` and `gitops` directories retain the existing GCS state prefixes:
+Monitoring and GitHub Actions are deliberately not included yet. They can be added after the infrastructure code is reviewed. Application delivery is expected to use Argo CD from the platform stack.
 
-```text
-staging/europe-west3/terraform.tfstate
-staging/europe-west3/platform/terraform.tfstate
-production/europe-west3/terraform.tfstate
-production/europe-west3/platform/terraform.tfstate
-```
+## Bootstrap state storage
 
-The directory names are now explicit while existing cloud resources remain attached to their original states.
-
-## ARC runner bootstrap
-
-Requirements are Terraform 1.10+, Terragrunt 1.0.4+, authenticated `gcloud` and `gh`, plus `wg` for generating the administrator key. Docker is not required locally.
+The state bucket is created once with a local bootstrap state. It is not destroyed or recreated by every environment deployment:
 
 ```bash
-umask 077
-wg genkey | tee ~/.config/wireguard/order-client.key |
-  wg pubkey > ~/.config/wireguard/order-client.pub
-
-export GCP_PROJECT_ID="project-03272afe-c622-4c2b-868"
-export WIREGUARD_CLIENT_PUBLIC_KEY="$(cat ~/.config/wireguard/order-client.pub)"
-make bootstrap-management
+export GCP_PROJECT_ID=project-03272afe-c622-4c2b-868
+export TF_STATE_BUCKET_STAGE="${GCP_PROJECT_ID}-stage-tfstate"
+export TF_STATE_BUCKET_PROD="${GCP_PROJECT_ID}-prod-tfstate"
+export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+terragrunt run --working-dir environments/bootstrap/state init
+terragrunt run --working-dir environments/bootstrap/state apply -auto-approve
 ```
 
-The `Build ARC runner image` workflow publishes
-`europe-west3-docker.pkg.dev/<project>/order-service/runner:<commit>`.
-The image contains the pinned Actions Runner, Terraform, Terragrunt, gcloud,
-kubectl, Helm and Docker CLI. It is built remotely; Docker is not required
-locally.
+The generated GCS backend uses a separate bucket for each environment, a separate prefix for each Terragrunt stack, and native GCS locking.
 
-After the cluster exists, configure the GitHub token and image reference for
-the GitOps component and apply it once from the existing bootstrap runner:
+State is separated by environment at bucket level:
+
+| Environment | State bucket |
+| --- | --- |
+| staging | `gs://$TF_STATE_BUCKET_STAGE` |
+| production | `gs://$TF_STATE_BUCKET_PROD` |
+
+Each stack also has its own state object inside that environment bucket:
+
+| Terragrunt entry point | GCS state object |
+| --- | --- |
+| `environments/staging/europe-west3` | `gs://$TF_STATE_BUCKET_STAGE/staging/europe-west3/terraform.tfstate` |
+| `environments/staging/europe-west3/platform` | `gs://$TF_STATE_BUCKET_STAGE/staging/europe-west3/platform/terraform.tfstate` |
+| `environments/production/europe-west3` | `gs://$TF_STATE_BUCKET_PROD/production/europe-west3/terraform.tfstate` |
+| `environments/production/europe-west3/platform` | `gs://$TF_STATE_BUCKET_PROD/production/europe-west3/platform/terraform.tfstate` |
+
+The backend itself is declared in `terraform/backend.tf`; Terragrunt injects the bucket and prefix values into generated `backend.tf` files during `terragrunt init`.
+
+## Deploy infrastructure
+
+Use a restricted administrator CIDR for the private control-plane endpoint. Do not use `0.0.0.0/0`.
 
 ```bash
-export ARC_ENABLED=true
-export GITHUB_ARC_TOKEN="<fine-grained token with repository administration>"
-export ARC_RUNNER_IMAGE="europe-west3-docker.pkg.dev/<project>/order-service/runner:<commit>"
+export GKE_ADMIN_CIDR="10.10.10.10/32"
+terragrunt run --working-dir environments/staging/europe-west3 init
+terragrunt run --working-dir environments/staging/europe-west3 plan
+terragrunt run --working-dir environments/staging/europe-west3 apply
 ```
 
-For the manual infrastructure workflow, store the same values as repository
-configuration: variable `ARC_ENABLED=true`, variable `ARC_RUNNER_IMAGE`, and
-secret `ARC_GITHUB_TOKEN`.
-
-Terraform installs the ARC controller and one scale set named `arc-staging` or
-`arc-production`. The scale set keeps zero idle runners and creates at most one
-ephemeral runner pod, so it does not consume a permanent Compute Engine VM.
-The token is passed as a sensitive Terraform variable and is never baked into
-the runner image.
-
-UDP/51820 accepts connections from dynamic public addresses because the administrator uses DHCP. WireGuard still admits only the configured cryptographic peer.
-
-## Infrastructure provisioning
-
-Run `Manual infrastructure component` and choose one environment and one component. Components are intentionally not chained, so changing GitOps does not recreate the cluster and changing the application does not run Terragrunt.
-
-Initial order for an environment:
-
-```text
-foundation → cluster → gitops → application release → global
-```
-
-`global` is applied after the first Argo CD sync because its load-balancer backend reads the NEGs created by the application Service.
-
-Production application reconciliation is disabled in `gitops/environments/production/values.yaml` until its foundation outputs are recorded there. This prevents Argo CD from deploying with blank database or Redis endpoints.
-
-## Application release
-
-Run `Deploy staging`. It verifies the Go application, builds one immutable
-image tagged with the commit SHA, and updates only staging GitOps values. After
-staging validation, run `Promote tested image to production` manually and
-provide the exact 40-character image tag. Promotion reuses the staging image;
-it never rebuilds the application.
-
-The reusable environment workflow is:
-
-```text
-staging: verify → build/push GIT_SHA → update staging values → Argo CD sync
-                                                               ↓
-production: manual approval → reuse GIT_SHA → update production values
-```
-
-Only the image tag changes during a normal release. Terraform owns Rancher, Argo CD, and the root Application; Argo CD exclusively owns the application chart and observability resources.
-
-## Private access
-
-Connect WireGuard, fetch internal cluster credentials, and open local tunnels:
+Production uses the same modules and a different state prefix:
 
 ```bash
-gcloud container clusters get-credentials order-staging-europe-west3-gke \
-  --region=europe-west3 --internal-ip
-
-kubectl -n cattle-system port-forward service/rancher 9443:443
-kubectl -n argocd port-forward service/argocd-server 8443:443
+terragrunt run --working-dir environments/production/europe-west3 plan
+terragrunt run --working-dir environments/production/europe-west3 apply
 ```
 
-Production uses `order-production-europe-west3-gke`. Rancher bootstrap passwords are stored in Secret Manager as `order-staging-rancher-bootstrap` and `order-production-rancher-bootstrap`.
+The application node pool is separate from the removed default pool and autoscales from one to four `e2-medium` nodes across two zones. GKE nodes and the bastion have no public IP addresses. The bastion is reached through IAP and has a least-privilege cluster viewer service account; it is the place to run platform operations against the private endpoint.
 
-## Static checks
+## Install Argo CD and Rancher
+
+Run this Terragrunt stack from the bastion (or from a workstation connected through an IAP tunnel to the private endpoint) after the infrastructure stack is ready:
 
 ```bash
-go test -race ./...
-go vet ./...
-terraform fmt -check -recursive terraform
-make terraform-validate
-terragrunt hcl fmt --check
-make charts-validate
+gcloud compute ssh order-staging-europe-west3-bastion \
+  --zone=europe-west3-a --tunnel-through-iap
+terragrunt run --working-dir environments/staging/europe-west3/platform init
+terragrunt run --working-dir environments/staging/europe-west3/platform apply
 ```
+
+The platform stack installs Argo CD and Rancher with Helm and stores the Rancher bootstrap password in Secret Manager. The Helm provider connects to the private GKE endpoint using the VM's identity; no service-account key files are used.
+
+## Self-hosted runners and private image builds
+
+Application CI/CD jobs run on self-hosted runners labeled `gke-private`. These runners are deployed into the private GKE subnet through Actions Runner Controller, so pushes to Artifact Registry use the regional Artifact Registry hostname from inside the VPC. The GKE subnet has Private Google Access enabled, so Artifact Registry traffic follows the private Google APIs path instead of relying on a NAT public IP as the primary route.
+
+Cloud NAT still exists for non-Google outbound dependencies, such as an external billing API or public package downloads.
+
+Runner lifecycle is split into two workflows:
+
+```bash
+.github/workflows/runner-build.yml   builds and pushes the custom runner image
+.github/workflows/runner-deploy.yml  deploys the ARC runner scale set to GKE
+```
+
+The runner image is stored in Artifact Registry as `github-runner:<git-sha>` and includes `gcloud`, `terraform`, `terragrunt`, `kubectl`, `helm`, and Docker CLI. Secrets and GitHub tokens are not baked into the image; they are supplied at runtime through GitHub secrets and Kubernetes secrets.
+
+The runner build and runner deploy workflows expect one initial self-hosted bootstrap runner labeled `bootstrap`. That bootstrap runner must also live in the GCP VPC/private subnet with Private Google Access enabled; it is only used to build and deploy the first ARC runner image. After the ARC runner scale set is running, normal app workflows use `runs-on: [self-hosted, linux, gke-private]`.
+
+## Assessment mapping
+
+- Custom VPC, dedicated GKE and Cloud SQL subnets, Cloud NAT, and scoped firewall rules: `modules/networking`.
+- Private regional GKE, separate autoscaled application pool, Workload Identity, Binary Authorization, and restricted master networks: `modules/gke`.
+- PostgreSQL 15 private IP, regional HA, backups, deletion protection, and Secret Manager credentials: `modules/cloudsql`.
+- Artifact Registry repository for application and runner images: `stacks/infrastructure`.
+- GCS backend and per-environment prefixes: `terraform/backend.tf` and `environments/global.hcl`.
+- Downstream cluster, database, subnet, bastion, and secret outputs: stack output files.

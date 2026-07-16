@@ -1,0 +1,15 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: order-service
+  namespace: order-service
+  labels:
+    app.kubernetes.io/name: order-service
+    app.kubernetes.io/component: api
+spec:
+  minAvailable: 75%
+  unhealthyPodEvictionPolicy: IfHealthyBudget
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: order-service
+      app.kubernetes.io/component: api

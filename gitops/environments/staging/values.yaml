@@ -3,6 +3,9 @@ targetRevision: main
 environment: staging
 region: europe-west3
 
+observability:
+  enabled: false
+
 orderService:
   enabled: true
   image:

@@ -1,76 +1,207 @@
 {
-  "annotations": {"list": []},
+  "annotations": {
+    "list": []
+  },
   "editable": true,
   "graphTooltip": 1,
   "panels": [
     {
-      "id": 1,
-      "title": "Request rate by HTTP status",
-      "type": "timeseries",
-      "targets": [
-        {"expr": "sum by (status_code) (rate(http_requests_total{service=\"order-service\"}[5m]))", "legendFormat": "{{status_code}}", "refId": "A"}
-      ],
-      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
-    },
-    {
-      "id": 2,
-      "title": "5xx error rate",
-      "type": "timeseries",
-      "targets": [
-        {"expr": "100 * sum(rate(http_requests_total{service=\"order-service\",status_code=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{service=\"order-service\"}[5m])), 0.001)", "legendFormat": "5xx %", "refId": "A"}
-      ],
-      "fieldConfig": {"defaults": {"unit": "percent", "min": 0}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
-    },
-    {
-      "id": 3,
-      "title": "Request latency percentiles",
-      "type": "timeseries",
-      "targets": [
-        {"expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"order-service\"}[5m])))", "legendFormat": "p50", "refId": "A"},
-        {"expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"order-service\"}[5m])))", "legendFormat": "p95", "refId": "B"},
-        {"expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"order-service\"}[5m])))", "legendFormat": "p99", "refId": "C"}
-      ],
-      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
-    },
-    {
-      "id": 4,
-      "title": "Available replicas",
-      "type": "timeseries",
-      "targets": [
-        {"expr": "kube_deployment_status_replicas_available{namespace=\"order-service\",deployment=\"order-service\"}", "legendFormat": "available", "refId": "A"}
-      ],
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
-      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 8}
-    },
-    {
-      "id": 5,
-      "title": "Error budget remaining",
-      "type": "gauge",
-      "targets": [
-        {"expr": "100 * order_service:error_budget_remaining:ratio_30d", "legendFormat": "remaining", "refId": "A"}
-      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 10}]}
+          "unit": "reqps"
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 8}
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "sum by (status_code) (rate(http_requests_total{service=\"order-service\"}[5m]))",
+          "legendFormat": "{{status_code}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Request Rate by HTTP Status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "100 * order_service:request_error_ratio:rate5m",
+          "legendFormat": "5xx / total",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Rate Percentage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"order-service\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"order-service\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"order-service\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "title": "Latency Percentiles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "kube_deployment_status_replicas_available{namespace=\"order-service\",deployment=\"order-service\"}",
+          "legendFormat": "available",
+          "refId": "A"
+        }
+      ],
+      "title": "Available Replica Count",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 8
+      },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "100 * order_service:error_budget_remaining:ratio_30d",
+          "legendFormat": "remaining",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Budget Remaining",
+      "type": "gauge"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["order-service", "sre"],
-  "templating": {"list": []},
-  "time": {"from": "now-6h", "to": "now"},
+  "tags": [
+    "order-service",
+    "sre",
+    "slo"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timezone": "browser",
   "title": "Order Service SRE",
   "uid": "order-service-sre",
-  "version": 1
+  "version": 2
 }

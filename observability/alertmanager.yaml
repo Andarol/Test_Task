@@ -1,0 +1,51 @@
+apiVersion: monitoring.googleapis.com/v1
+kind: AlertmanagerConfig
+metadata:
+  name: order-service-alertmanager
+  namespace: order-service
+  labels:
+    app.kubernetes.io/name: order-service
+    app.kubernetes.io/component: observability
+spec:
+  route:
+    receiver: sre-default
+    groupBy:
+      - alertname
+      - service
+      - severity
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    routes:
+      - receiver: sre-critical
+        matchers:
+          - name: severity
+            value: critical
+        repeatInterval: 1h
+      - receiver: sre-warning
+        matchers:
+          - name: severity
+            value: warning
+        repeatInterval: 6h
+  receivers:
+    - name: sre-default
+      webhookConfigs:
+        - url:
+            secret:
+              name: alertmanager-webhooks
+              key: default_url
+          sendResolved: true
+    - name: sre-critical
+      webhookConfigs:
+        - url:
+            secret:
+              name: alertmanager-webhooks
+              key: critical_url
+          sendResolved: true
+    - name: sre-warning
+      webhookConfigs:
+        - url:
+            secret:
+              name: alertmanager-webhooks
+              key: warning_url
+          sendResolved: true

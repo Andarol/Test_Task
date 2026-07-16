@@ -1,19 +1,31 @@
-output "gke_subnetwork_id" {
-  value       = google_compute_subnetwork.gke.id
-  description = "GKE subnetwork ID."
+output "network_name" {
+  value = google_compute_network.vpc.name
 }
 
-output "pod_range_name" {
-  value       = google_compute_subnetwork.gke.secondary_ip_range[0].range_name
-  description = "GKE pod secondary range name."
+output "network_id" {
+  value = google_compute_network.vpc.id
 }
 
-output "service_range_name" {
-  value       = google_compute_subnetwork.gke.secondary_ip_range[1].range_name
-  description = "Kubernetes Service secondary range name."
+output "gke_subnet_name" {
+  value = google_compute_subnetwork.gke.name
 }
 
-output "node_network_tag" {
-  value       = local.node_tag
-  description = "Network tag attached to GKE nodes."
+output "gke_subnet_self_link" {
+  value = google_compute_subnetwork.gke.self_link
+}
+
+output "pods_range_name" {
+  value = google_compute_subnetwork.gke.secondary_ip_range[0].range_name
+}
+
+output "services_range_name" {
+  value = google_compute_subnetwork.gke.secondary_ip_range[1].range_name
+}
+
+output "sql_subnet_name" {
+  value = google_compute_subnetwork.sql.name
+}
+
+output "private_service_connection" {
+  value = google_service_networking_connection.private_services.network
 }

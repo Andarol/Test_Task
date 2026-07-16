@@ -1,0 +1,74 @@
+name: Runner Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/runner-image/**
+      - .github/workflows/runner-build.yml
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+
+env:
+  GCP_REGION: europe-west3
+  ARTIFACT_REGISTRY_REPOSITORY: order-service
+  RUNNER_IMAGE_NAME: github-runner
+
+jobs:
+  build-runner-image:
+    name: Build and push runner image
+    runs-on: [self-hosted, linux, bootstrap]
+    outputs:
+      image-repository: ${{ steps.image.outputs.repository }}
+      image-tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_ARTIFACT_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push runner image
+        id: image
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          image_repository="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPOSITORY}/${RUNNER_IMAGE_NAME}"
+          docker build --tag "${image_repository}:${IMAGE_TAG}" .github/runner-image
+          docker push "${image_repository}:${IMAGE_TAG}"
+
+          echo "repository=${image_repository}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+
+  dispatch-runner-deploy:
+    name: Dispatch runner deploy
+    needs: build-runner-image
+    runs-on: [self-hosted, linux, bootstrap]
+    steps:
+      - name: Trigger runner deploy workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'runner-deploy.yml',
+              ref: context.ref.replace('refs/heads/', ''),
+              inputs: {
+                environment: 'stage',
+                runner_image_repository: '${{ needs.build-runner-image.outputs.image-repository }}',
+                runner_image_tag: '${{ needs.build-runner-image.outputs.image-tag }}'
+              }
+            });

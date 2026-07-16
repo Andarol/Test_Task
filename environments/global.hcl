@@ -1,6 +1,14 @@
 locals {
-  environment = read_terragrunt_config(find_in_parent_folders("environment.hcl"))
-  project_id  = local.environment.locals.project_id
+  project_id        = get_env("GCP_PROJECT_ID", "REPLACE_WITH_GCP_PROJECT_ID")
+  region            = "europe-west3"
+  zones             = ["europe-west3-a", "europe-west3-b"]
+  state_environment = split("/", path_relative_to_include())[0]
+  state_bucket_suffixes = {
+    staging    = "stage"
+    production = "prod"
+  }
+  state_bucket_suffix = local.state_bucket_suffixes[local.state_environment]
+  state_bucket        = get_env("TF_STATE_BUCKET_${upper(local.state_bucket_suffix)}", "${local.project_id}-${local.state_bucket_suffix}-tfstate")
 }
 
 remote_state {
@@ -12,36 +20,19 @@ remote_state {
   }
 
   config = {
-    project              = local.project_id
-    bucket               = "${local.project_id}-order-service-tfstate"
-    prefix               = "${path_relative_to_include()}/terraform.tfstate"
-    location             = "EU"
-    skip_bucket_creation = true
+    # Terraform state is separated by environment at bucket level:
+    # - staging    -> $TF_STATE_BUCKET_STAGE or <project_id>-stage-tfstate
+    # - production -> $TF_STATE_BUCKET_PROD or <project_id>-prod-tfstate
+    #
+    # Each Terragrunt entry point then gets an isolated object prefix:
+    # - gs://<stage-bucket>/staging/europe-west3/terraform.tfstate
+    # - gs://<stage-bucket>/staging/europe-west3/platform/terraform.tfstate
+    # - gs://<prod-bucket>/production/europe-west3/terraform.tfstate
+    # - gs://<prod-bucket>/production/europe-west3/platform/terraform.tfstate
+    #
+    # GCS provides native state locking through the .tflock object created next
+    # to each state file.
+    bucket = local.state_bucket
+    prefix = "${path_relative_to_include()}/terraform.tfstate"
   }
 }
-
-terraform {
-  source = "../../../terraform//stacks/global"
-}
-
-dependency "cluster" {
-  config_path = "../${local.environment.locals.region}/cluster"
-  mock_outputs = {
-    neg_name           = "order-service-${local.environment.locals.environment}-europe-west3"
-    gke_node_locations = ["europe-west3-a", "europe-west3-b"]
-  }
-  mock_outputs_allowed_terraform_commands = ["validate"]
-}
-
-inputs = merge(local.environment.locals.common_inputs, {
-  domain_names                    = local.environment.locals.domain_names
-  waf_preview                     = local.environment.locals.waf_preview
-  waf_rate_limit_requests_per_min = local.environment.locals.waf_rate_limit_requests_per_min
-  regions = {
-    (local.environment.locals.region) = {
-      neg_name        = dependency.cluster.outputs.neg_name
-      zones           = dependency.cluster.outputs.gke_node_locations
-      capacity_scaler = local.environment.locals.regions[local.environment.locals.region].capacity_scaler
-    }
-  }
-})

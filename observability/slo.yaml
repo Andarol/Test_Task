@@ -5,11 +5,26 @@ metadata:
   namespace: order-service
   labels:
     app.kubernetes.io/name: order-service
+    app.kubernetes.io/component: observability
 spec:
   groups:
     - name: order-service.slo.recording
       interval: 1m
       rules:
+        - record: order_service:requests:rate5m
+          expr: |
+            sum(rate(http_requests_total{service="order-service"}[5m]))
+
+        - record: order_service:request_errors:rate5m
+          expr: |
+            sum(rate(http_requests_total{service="order-service",status_code=~"5.."}[5m]))
+
+        - record: order_service:request_error_ratio:rate5m
+          expr: |
+            order_service:request_errors:rate5m
+            /
+            clamp_min(order_service:requests:rate5m, 0.001)
+
         - record: order_service:sli_availability:ratio_30d
           expr: |
             1 - (
@@ -17,18 +32,23 @@ spec:
               /
               clamp_min(sum(increase(http_requests_total{service="order-service"}[30d])), 1)
             )
+
         - record: order_service:sli_latency_lt_500ms:ratio_30d
           expr: |
             sum(increase(http_request_duration_seconds_bucket{service="order-service",le="0.5"}[30d]))
             /
             clamp_min(sum(increase(http_request_duration_seconds_count{service="order-service"}[30d])), 1)
+
         - record: order_service:sli_error:ratio_1h
           expr: |
             sum(increase(http_requests_total{service="order-service",status_code=~"5.."}[1h]))
             /
             clamp_min(sum(increase(http_requests_total{service="order-service"}[1h])), 1)
+
         - record: order_service:error_budget_burn_rate:ratio_1h
-          expr: order_service:sli_error:ratio_1h / (1 - 0.999)
+          expr: |
+            order_service:sli_error:ratio_1h / (1 - 0.999)
+
         - record: order_service:error_budget_remaining:ratio_30d
           expr: |
             clamp_max(

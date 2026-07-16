@@ -1,99 +1,252 @@
-# Architecture answers
+# SRE Assessment Answers
 
-## Q1 — private GKE image pull path
+## Part 2: Kubernetes manifests
 
-The pod does not pull its own image. The kubelet asks containerd on the GKE node to resolve and pull the image before the pod can start.
+### Deployment sizing
 
-1. The scheduler binds the pending pod to a node in the private GKE node pool.
-2. Kubelet passes the Artifact Registry image reference to containerd.
-3. The node resolves `${region}-docker.pkg.dev` through Cloud DNS using Google-provided DNS.
-4. GKE obtains a short-lived OAuth token for the node's dedicated Google service account through the Compute Engine metadata server. IAM verifies that this service account has `roles/artifactregistry.reader` on the repository/project. This is node identity, not the application pod's Workload Identity.
-5. The node sends HTTPS traffic from its private NIC in the custom VPC and GKE subnetwork. Private Google Access on that subnetwork lets the private source address reach Google APIs and Artifact Registry through Google networking. The VPC route and Google API frontend carry the request to Artifact Registry; Artifact Registry authorizes it with IAM and returns the manifest and image layers.
-6. Containerd verifies layer digests, stores the content in its local cache, and creates the container. Binary Authorization is evaluated by GKE admission before the workload runs according to the project policy.
+The baseline replica count is set to 6 pods for `order-service`.
 
-Cloud NAT is available for general public HTTPS egress, including the external billing API. It is not the required path for supported Google APIs when Private Google Access is used. If DNS were deliberately configured to use ordinary public endpoints without Private Google Access, the alternative path would be node private IP → VPC route → Cloud NAT/Cloud Router → Google frontend, but that is not the selected design.
+The service is expected to handle about 5,000 requests/minute at peak, which is about 83 requests/second. A 6-pod baseline gives roughly 14 requests/second per pod before autoscaling. That leaves enough steady-state headroom for short bursts, slow external billing API calls, and one pod being unavailable during a rollout or node event.
 
-Components involved are: GKE scheduler, kubelet, containerd, node service account, Compute Engine metadata server, IAM, Cloud DNS, the node NIC, custom VPC, GKE subnetwork, VPC routes, Private Google Access, Google API frontend, Artifact Registry, and Binary Authorization. Cloud NAT/Cloud Router serve non-Google public egress.
+The HPA can scale from 6 to 40 replicas. This keeps the normal footprint modest while allowing peak traffic, retry storms, or dependency latency to be absorbed without immediately exhausting pod capacity.
 
-## Q2 — Workload Identity chain of trust
+### Resource requests and limits
 
-This design uses direct Workload Identity Federation for GKE, without a Google service-account key and without impersonating a Google service account.
+Each pod requests `500m` CPU and `512Mi` memory and is limited to `1` CPU and `1Gi` memory.
 
-1. The pod is assigned Kubernetes ServiceAccount `order-service` in namespace `order-service`.
-2. GKE registers the cluster as an identity provider in the Google-managed workload identity pool `${PROJECT_ID}.svc.id.goog` and runs the GKE metadata server on each node.
-3. When the GKE SecretSync controller acts for the named KSA, a short-lived, audience-bound KSA JWT is issued and signed by the Kubernetes API server.
-4. The GKE metadata server exchanges that JWT with Google Security Token Service. STS verifies the cluster issuer, signature, audience, namespace, and service-account subject, then returns a short-lived federated token for the principal:
+The request reserves enough CPU for a Go HTTP service doing JSON handling, database connectivity, Redis cache access, metrics, and external API waits without being too expensive at the 6-pod baseline. The CPU limit allows short bursts up to one full core per pod while preventing one busy pod from starving the node.
 
-   `principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/PROJECT_ID.svc.id.goog/subject/ns/order-service/sa/order-service`
+The memory request gives room for the Go runtime, connection buffers, TLS Redis calls, metrics, and normal heap growth. The `1Gi` limit gives burst room while still surfacing leaks or abnormal memory growth quickly.
 
-5. The Secret Manager secret IAM policy grants only that principal `roles/secretmanager.secretAccessor`.
-6. Secret Manager validates the federated identity and IAM policy and returns the selected secret version over TLS.
-7. The GKE SecretSync controller maps it to the `order-service-db` Kubernetes Secret. The Deployment references only the `password` key. GKE encrypts Kubernetes Secret data at rest; namespace RBAC must still be restricted.
+### Probes
 
-All credentials are short-lived and derived from the pod identity. No JSON key is created, mounted, or stored in GitHub.
+The liveness probe uses `/healthz` because it only verifies that the process and HTTP server are alive. It should not depend on PostgreSQL or external systems, otherwise a database issue could cause unnecessary restarts.
 
-## Q3 — a plan wants to replace Cloud SQL
+The readiness probe uses `/readyz` because the service implementation checks internal readiness and PostgreSQL TCP connectivity there. If the database is unreachable, the pod is removed from service endpoints instead of receiving traffic it cannot handle.
 
-Do not apply it. The order of operations is:
+A startup probe is included so slower cold starts do not trigger liveness failures before the process is ready.
 
-1. Save the complete plan artifact, identify every force-replacement attribute, and confirm that the plan uses the correct project, backend prefix, workspace/state, provider version, and variables.
-2. Check for accidental resource-address changes, module renames, state drift, provider schema changes, immutable network/region/name changes, or a resource that exists in GCP but is absent from state.
-3. Pull and securely archive the current state: `terraform state pull`. Do not put it in Git because it contains sensitive values.
-4. Compare `terraform state show` with the actual Cloud SQL instance. Refresh with a reviewed plan; never “fix” this using direct state-file editing.
-5. Prefer a non-destructive correction: restore the previous argument, add a `moved` block, or import the existing instance into the correct address. Run a new plan and require the destroy/create actions to disappear.
-6. If replacement is genuinely required, open a reviewed migration change, define RTO/RPO and rollback, select a maintenance window, freeze unrelated database changes, and notify service/database owners.
-7. Verify automated backup/PITR health, take an on-demand backup, export critical data to a separately protected bucket if policy requires it, and test restore into a temporary instance.
-8. Provision the replacement alongside the old instance where possible. Restore/replicate data, validate schema, extensions, users, flags, connectivity, performance, and application smoke tests.
-9. Drain writes or establish a final synchronization point, switch the application secret/configuration, deploy, and verify correctness plus SLOs. Keep the old instance protected during the rollback window.
-10. Only after approval and successful verification should the team deliberately remove `prevent_destroy` and Cloud SQL deletion protection in a separate reviewed apply, then execute the replacement plan. Re-enable both controls immediately afterward.
+### Rolling updates
 
-The repository sets both guards, so an unexpected replacement is blocked even if a reviewer misses it.
+The deployment uses `maxUnavailable: 0` and `maxSurge: 2`.
 
-## Q4 — new pod returns 500 during rolling update
+This keeps all existing ready pods serving traffic while new pods start and pass readiness checks. `minReadySeconds: 15`, graceful termination, and a `preStop` delay give the load balancer and endpoint controller time to stop sending new requests to terminating pods.
 
-The Deployment uses four replicas, `maxUnavailable: 0`, `maxSurge: 1`, a startup probe on `/healthz`, and readiness on `/readyz`.
+### HPA policy
 
-The controller creates one additional new pod while all four old pods remain. Until startup succeeds, liveness/readiness do not cause it to receive Service traffic. After startup succeeds, readiness controls whether its endpoint is published.
+CPU target is `65%`, which gives the autoscaler enough signal before pods reach saturation. Memory target is `75%`, which prevents sustained memory pressure while avoiding premature scaling for normal Go heap variation.
 
-- If `/readyz` also returns a failure, the new pod stays unready and is not added to the Service endpoint set. No old pod is terminated because `maxUnavailable` is zero. After `progressDeadlineSeconds`, the rollout is marked failed and CI rolls back. Customers continue on the four old pods.
-- If only business requests return 500 while `/readyz` incorrectly returns 200, Kubernetes considers the pod ready after `minReadySeconds`. It receives traffic, and the rollout may remove an old pod. This is why readiness must verify every dependency required to serve orders, not merely process health.
+Scale-up allows fast reaction with either 100% growth or up to 6 pods per minute. Scale-down uses a 300-second stabilization window and conservative policies to prevent flapping after short traffic spikes.
 
-HPA does not react directly to HTTP 500 or readiness. It uses CPU and memory utilization relative to requests. It may scale indirectly if the failure increases those metrics, and it excludes not-yet-ready pod CPU during its initialization rules. Scaling changes the Deployment's desired replica count while the rollout controller continues respecting surge/unavailable limits.
+### PDB
 
-## Q5 — 10x burn rate
+The PodDisruptionBudget uses `minAvailable: 75%`.
 
-A 99.9% 30-day objective allows `30 × 24 × 60 × 0.001 = 43.2` minutes of errors. At the sustainable 1x rate, the service consumes `43.2 / 720 = 0.06` error-budget minutes per wall-clock hour. At 10x it consumes `0.6` budget minutes per hour.
+With 6 baseline replicas, at least 5 pods must remain available during voluntary disruptions such as node upgrades or maintenance. This keeps the service available while still allowing controlled infrastructure operations to proceed.
 
-If the entire budget remains and the burn stays constant, exhaustion occurs after `43.2 / 0.6 = 72` hours. More generally, exhaustion time is `remaining budget minutes / 0.6`. The 10x rate corresponds to roughly a 1% error ratio for a 99.9% availability SLO.
+### Secrets
 
-At 03:00 this is a page, not a ticket: acknowledge, check customer/payment correctness, correlate rollout/database/billing events, stop a bad rollout or roll back, control retry amplification, and involve the service owner. The team should mitigate immediately because multi-window symptoms or prior budget use can make the real exhaustion time much shorter than 72 hours.
+Application credentials are not hardcoded in manifests.
 
-## Q6 — four-core CPU limit
+`k8s/secret-sync.yaml` defines GKE Secret Manager sync resources that materialize Kubernetes Secrets from Secret Manager. The deployment consumes only those Kubernetes Secrets. Access is granted through the Kubernetes service account and GKE Workload Identity, so no service account key files are needed.
 
-A 4-core limit does not reserve four cores and does not guarantee the container will never be throttled. Scheduling uses CPU requests. With a small or absent request, many such pods can share a node and each may burst toward four cores, causing contention and noisy-neighbor latency. With a four-core request, each pod consumes an entire `e2-standard-4` node's schedulable CPU, wasting capacity. HPA CPU utilization is also calculated against requests, so an unrealistic request distorts scaling.
+## Questions
 
-The initial configuration requests 250m CPU/256Mi memory and limits the pod to 1 CPU/512Mi. The request gives the scheduler and HPA a realistic baseline; the higher CPU limit permits bounded bursts without allowing one pod to dominate a node; the memory limit prevents unbounded OOM pressure. These are hypotheses: load tests should measure per-request CPU, allocation rate, p95/p99 latency, throttling, and GC behavior, then right-size requests, limits, replicas, and HPA targets. For a latency-sensitive Go service, omitting the CPU limit can also be evaluated, but only with strong requests, quotas, and monitoring in place.
+### Q1: Private GKE nodes pulling images from Artifact Registry
 
-## Q7 — 5% canary without another tool
+The pod does not pull the image itself. The kubelet on the private GKE node pulls the image before starting the container.
 
-A plain Kubernetes Service has no weighted routing. The available no-tool approximation is endpoint weighting: run two Deployments selected by the same Service, with 19 ready stable pods and one ready canary pod. With sufficiently distributed new connections this gives approximately 5% of traffic to the canary. HTTP keep-alive and unequal pod capacity mean it is not an exact 5%; exact weighting requires an ingress/controller or service mesh and would violate the “no additional tools” constraint.
+Network path with private access to Google APIs:
 
-Pipeline procedure:
+1. The scheduler assigns the pod to a private GKE node in the GKE node subnet.
+2. The kubelet/container runtime on that node reads the image reference, for example `europe-west3-docker.pkg.dev/project-03272afe-c622-4c2b-868/order-service/order-service:<sha>`.
+3. The node uses its node service account to request an access token from Google metadata server / IAM credentials.
+4. The node resolves `europe-west3-docker.pkg.dev` through Cloud DNS / Google DNS.
+5. Traffic leaves the private node through the custom VPC subnet route.
+6. The GKE node subnet has Private Google Access enabled, or the VPC has Private Service Connect for Google APIs.
+7. The request reaches Artifact Registry over Google's private network path for Google APIs. The node does not need an external IP and does not need to use a NAT public IP for Artifact Registry.
+8. Artifact Registry validates the token and checks IAM permission such as `roles/artifactregistry.reader`.
+9. Image layers are downloaded back to the private node over the same private Google APIs path.
+10. The container runtime stores the layers locally and starts the container.
 
-1. Record the stable image digest and current replica/HPA settings. Temporarily stabilize the experiment at 19 stable replicas and suspend HPA changes that would alter the ratio.
-2. Create `order-service-canary` with one replica, the same probes/resources/configuration, a `track=canary` label, and the new Git-SHA image. Keep the Service selector common to both Deployments.
-3. Wait for canary readiness. If it does not become ready, delete it immediately; all traffic remains on stable endpoints.
-4. Observe for a defined period, such as ten minutes, and query the canary pod series:
+GCP components involved: private GKE node, kubelet/container runtime, node service account, IAM, metadata server / IAM credentials path, custom VPC, private GKE node subnet, subnet Private Google Access or Private Service Connect for Google APIs, Cloud DNS / Google DNS resolution, Artifact Registry, and Artifact Registry IAM.
 
-   ```promql
-   sum(rate(http_requests_total{pod=~"order-service-canary-.*",status_code=~"5.."}[5m]))
-   /
-   clamp_min(sum(rate(http_requests_total{pod=~"order-service-canary-.*"}[5m])), 0.001)
+Cloud NAT is still useful for private nodes when they need outbound access to non-Google public endpoints, such as an external billing API. It should not be the primary path for pulling images from Artifact Registry.
+
+### Q2: Workload Identity and Secret Manager without key files
+
+Workload Identity removes the need for JSON service account keys by binding a Kubernetes ServiceAccount to a Google Service Account.
+
+Chain of trust:
+
+1. The pod runs as a Kubernetes ServiceAccount, for example `order-service` in namespace `order-service`.
+2. The Kubernetes ServiceAccount is annotated with the Google Service Account email.
+3. GKE issues a projected Kubernetes service account token to the pod.
+4. The pod or Secret Manager sync component calls the GKE metadata server from inside the cluster.
+5. GKE metadata server validates the projected Kubernetes token with the Kubernetes control plane trust root.
+6. IAM checks that the Kubernetes identity is allowed to impersonate the Google Service Account through Workload Identity binding.
+7. Google STS / IAM credentials exchange that trusted Kubernetes identity for a short-lived Google access token.
+8. The Google access token is scoped to the Google Service Account permissions.
+9. Secret Manager authorizes the request using IAM, for example `roles/secretmanager.secretAccessor` on the required secrets.
+
+No key file exists in the pod, repository, CI variables, or Kubernetes Secret. The trust chain is Kubernetes ServiceAccount → GKE Workload Identity pool → IAM binding → Google Service Account → Secret Manager IAM.
+
+### Q3: Cloud SQL will be destroyed and recreated
+
+I do not run `terraform apply` until the risk is understood and a recovery plan exists.
+
+Steps in order:
+
+1. Stop and read the plan. Identify exactly which argument forces replacement.
+2. Confirm this is the intended workspace, project, environment, region, and state file.
+3. Check whether the Cloud SQL instance has `deletion_protection` and Terraform `prevent_destroy` enabled. If Terraform is still planning replacement, understand why.
+4. Compare Terraform state with real infrastructure using `terraform state show` and `gcloud sql instances describe`.
+5. Check recent code changes for immutable fields such as region, database version downgrade, instance name, private network, or settings that force replacement.
+6. If the change is accidental, revert or correct the Terraform change and rerun `terraform plan`.
+7. If replacement is truly required, open a change record and get approval from the service owner and database owner.
+8. Take an on-demand backup and verify automated backups are healthy.
+9. Validate point-in-time recovery settings and backup retention.
+10. Export or snapshot critical data if required by the recovery policy.
+11. Test restore into a temporary Cloud SQL instance.
+12. Prepare a migration plan: new instance, schema migration, data restore or replication, application cutover, rollback path, DNS/config changes, and validation queries.
+13. Schedule a maintenance window if downtime or write freeze is possible.
+14. Pause risky deploys and notify stakeholders.
+15. Run `terraform apply` only after the replacement path is safe, approved, backed up, and tested.
+16. After apply, verify connectivity, application readiness, database version, data integrity, backups, and monitoring.
+
+For a production database, accidental destroy/recreate should be treated as a stop-the-line event.
+
+### Q4: Rolling update with 3 replicas and new pod returns 500s
+
+With readiness configured against `/readyz`, Kubernetes only sends Service traffic to pods that pass readiness.
+
+Given `maxUnavailable: 0` and `maxSurge: 2`:
+
+1. The Deployment starts with 3 old ready replicas.
+2. A rolling update creates a new ReplicaSet.
+3. Kubernetes creates one or more surge pods without deleting old pods because `maxUnavailable: 0`.
+4. The new pod starts and the startup/liveness probe checks `/healthz`.
+5. The readiness probe checks `/readyz`.
+6. If the new pod returns 500 on `/readyz`, it is marked `NotReady`.
+7. The Service endpoints do not include the new pod.
+8. The old 3 pods remain ready and continue serving all traffic.
+9. Because no new pod becomes available, the Deployment cannot safely scale down old pods.
+10. After `progressDeadlineSeconds`, the rollout is marked failed or not progressing.
+
+If the new pod only returns 500 for business endpoints but `/readyz` still returns 200, Kubernetes will consider it ready and it can receive traffic. That is why `/readyz` must reflect dependencies and startup correctness, not only process liveness.
+
+The HPA does not react directly to HTTP 500s. It reacts to configured resource metrics, CPU and memory here. If the broken new pod consumes high CPU or memory, HPA may scale the Deployment. If errors happen with normal resource usage, HPA does not help. This is why rollback automation and smoke tests are required in addition to HPA.
+
+### Q5: 30-day error budget burn rate at 10x
+
+A 99.9% availability SLO allows 0.1% bad requests over 30 days.
+
+30 days is 43,200 minutes, so 0.1% is 43.2 minutes of budget, usually rounded to 43 minutes.
+
+At 1x burn, the service consumes the 30-day budget evenly across 30 days:
+
+```text
+43.2 minutes / 30 days = 1.44 minutes per day
+1.44 minutes / 24 hours = 0.06 minutes per hour
+```
+
+At 10x burn:
+
+```text
+0.06 minutes/hour * 10 = 0.6 minutes/hour
+```
+
+If the full 43.2-minute budget remained:
+
+```text
+43.2 / 0.6 = 72 hours
+```
+
+So the service is consuming 0.6 minutes of error budget per hour and would exhaust a full budget in about 72 hours. If some budget has already been spent, exhaustion is sooner.
+
+Response:
+
+1. Treat the alert as urgent because 10x burn means a customer-impacting condition is active.
+2. Acknowledge and open an incident channel.
+3. Check current 5xx ratio, request volume, p99 latency, and affected pods.
+4. Correlate with the latest deployment, Cloud SQL, Redis, and billing API status.
+5. If caused by a new release, roll back immediately after confirmation.
+6. If caused by dependency or capacity, mitigate according to the runbook.
+7. Page the service owner if burn continues or projected exhaustion is under 24 hours.
+8. Keep the incident open until burn rate returns below alert threshold and the error ratio remains healthy.
+
+### Q6: CPU limit of 4 cores in a shared GKE cluster
+
+Setting a 4-core CPU limit so the service is "never throttled" is the wrong framing.
+
+Problems:
+
+1. A high CPU limit does not reserve CPU. CPU requests reserve scheduling capacity; limits only cap runtime usage.
+2. If the request stays low and the limit is 4 cores, Kubernetes may pack too many pods onto a node, and the service can still contend with neighbors.
+3. If many pods burst toward 4 cores, they can create noisy-neighbor pressure in the shared node pool.
+4. A large limit can hide inefficient code and make capacity planning harder.
+5. If request is also raised to 4 cores, scheduling becomes expensive and wastes cluster capacity during normal traffic.
+6. HPA based on CPU utilization uses requests as the denominator, so oversized or undersized requests distort autoscaling.
+
+I would configure realistic CPU requests based on load testing and production metrics, for example `500m` request and `1` CPU limit for this Go service, then tune from observed p50/p95 CPU. HPA should scale before saturation, such as 60-65% CPU utilization. If CPU throttling is observed during legitimate bursts, increase the limit moderately or remove the CPU limit only if the node pool is dedicated and requests/HPA protect cluster fairness.
+
+The goal is predictable scheduling and fair sharing, not a very large per-pod ceiling.
+
+### Q7: Canary deployment strategy with existing Kubernetes and CI/CD
+
+Use two versions of the same app: stable and canary. No additional tools are required if the cluster uses GKE Gateway or Ingress traffic splitting. The CI/CD workflow already builds an immutable SHA-tagged image, deploys with Helm, waits for rollout, and runs smoke tests.
+
+Kubernetes objects:
+
+1. `Deployment/order-service-stable` running the current production image.
+2. `Deployment/order-service-canary` running the new SHA image.
+3. `Service/order-service-stable` selecting stable pods.
+4. `Service/order-service-canary` selecting canary pods.
+5. A Gateway API `HTTPRoute` or GKE load balancer backend configuration that sends 95% traffic to stable and 5% to canary.
+
+Flow:
+
+1. Build workflow runs lint, test with race detection, builds the image, and pushes it to Artifact Registry with the git SHA tag.
+2. Deploy workflow creates or updates the canary Deployment with the new image.
+3. Wait for canary rollout and readiness:
+
+   ```bash
+   kubectl -n order-service rollout status deployment/order-service-canary --timeout=10m
    ```
 
-   Also require readiness, sufficient request count, p99 latency, restarts, and database/billing dependency health.
-5. If the error ratio exceeds 1% or another gate fails, delete the canary Deployment. That removes its endpoint and returns 100% of new traffic to stable. Record the failed SHA.
-6. On success, update the stable Deployment to the canary SHA and wait for its normal zero-downtime rolling update. If that rollout fails, run `kubectl rollout undo`.
-7. Delete the canary, return stable to four minimum replicas, restore HPA, and verify `/healthz`, `/readyz`, error rate, and latency.
+4. Route 5% of traffic to canary and 95% to stable using weighted backend refs:
 
-This strategy is viable for the exercise but operationally expensive. In production I would explicitly document that 5% is statistical rather than guaranteed.
+   ```yaml
+   backendRefs:
+     - name: order-service-stable
+       port: 80
+       weight: 95
+     - name: order-service-canary
+       port: 80
+       weight: 5
+   ```
+
+5. Run smoke tests against `/healthz` and `/readyz`.
+6. Watch canary metrics for a fixed window, for example 10-15 minutes:
+
+   ```promql
+   sum(rate(http_requests_total{service="order-service",version="canary",status_code=~"5.."}[5m]))
+   /
+   clamp_min(sum(rate(http_requests_total{service="order-service",version="canary"}[5m])), 0.001)
+   ```
+
+7. Automatically promote if all checks pass:
+   - canary error rate is below 1%;
+   - p99 latency is below 1s;
+   - canary pods are ready;
+   - no crash-loop alert is firing.
+
+8. Promotion updates stable Deployment to the new image, waits for rollout, then changes traffic to 100% stable and 0% canary.
+
+9. Automatically rollback if canary error rate exceeds 1%:
+   - change traffic back to 100% stable and 0% canary;
+   - scale canary to zero or delete it;
+   - mark the GitHub Actions deployment failed;
+   - keep the previous stable image serving traffic.
+
+This can be implemented in the existing `deploy.yml` by adding a canary mode before production promotion: deploy canary, patch weighted route, run PromQL checks, then either patch stable to the new SHA or patch traffic back to stable.

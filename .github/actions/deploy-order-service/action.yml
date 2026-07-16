@@ -1,0 +1,55 @@
+name: Deploy order-service
+description: Render environment values and deploy order-service with Helm.
+inputs:
+  environment:
+    description: Deployment environment name.
+    required: true
+  values-file:
+    description: App-of-apps environment values file.
+    required: true
+  image-repository:
+    description: Artifact Registry image repository.
+    required: true
+  image-tag:
+    description: Image tag to deploy.
+    required: true
+  gcp-project-id:
+    description: GCP project ID.
+    required: true
+  namespace:
+    description: Kubernetes namespace.
+    required: false
+    default: order-service
+  release-name:
+    description: Helm release name.
+    required: false
+    default: order-service
+runs:
+  using: composite
+  steps:
+    - name: Deploy with Helm
+      shell: bash
+      env:
+        NAMESPACE: ${{ inputs.namespace }}
+        RELEASE_NAME: ${{ inputs.release-name }}
+        VALUES_FILE: ${{ inputs.values-file }}
+        IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        GCP_PROJECT_ID: ${{ inputs.gcp-project-id }}
+      run: |
+        helm upgrade --install "${RELEASE_NAME}" charts/order-service \
+          --namespace "${NAMESPACE}" \
+          --create-namespace \
+          --values "${VALUES_FILE}" \
+          --set-string "projectId=${GCP_PROJECT_ID}" \
+          --set-string "image.repository=${IMAGE_REPOSITORY}" \
+          --set-string "image.tag=${IMAGE_TAG}" \
+          --wait \
+          --timeout 10m
+
+    - name: Wait for rollout
+      shell: bash
+      env:
+        NAMESPACE: ${{ inputs.namespace }}
+      run: |
+        kubectl -n "${NAMESPACE}" rollout status deployment/order-service --timeout=10m

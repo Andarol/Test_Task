@@ -1,0 +1,108 @@
+name: Runner Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Cluster environment where ARC runners will be deployed.
+        required: true
+        default: stage
+        type: choice
+        options:
+          - stage
+          - prod
+      runner_image_repository:
+        description: Artifact Registry runner image repository.
+        required: true
+        type: string
+      runner_image_tag:
+        description: Runner image tag.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_REGION: europe-west3
+  ARC_NAMESPACE: arc-runners
+  RUNNER_SCALE_SET_NAME: gke-private
+
+jobs:
+  deploy-runners:
+    name: Deploy ARC runner scale set
+    runs-on: [self-hosted, linux, bootstrap]
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target cluster
+        id: environment
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "${TARGET_ENVIRONMENT}" in
+            stage)
+              echo "cluster-name=order-staging-europe-west3-gke" >> "${GITHUB_OUTPUT}"
+              ;;
+            prod)
+              echo "cluster-name=order-production-europe-west3-gke" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "Unsupported environment: ${TARGET_ENVIRONMENT}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Get cluster credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ steps.environment.outputs.cluster-name }}
+          location: ${{ env.GCP_REGION }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Install ARC controller
+        run: |
+          helm upgrade --install arc \
+            oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
+            --namespace "${ARC_NAMESPACE}" \
+            --create-namespace \
+            --wait \
+            --timeout 10m
+
+      - name: Create GitHub auth secret
+        env:
+          ARC_GITHUB_TOKEN: ${{ secrets.ARC_GITHUB_TOKEN }}
+        run: |
+          kubectl -n "${ARC_NAMESPACE}" create secret generic github-runners-auth \
+            --from-literal=github_token="${ARC_GITHUB_TOKEN}" \
+            --dry-run=client \
+            -o yaml \
+            | kubectl apply -f -
+
+      - name: Deploy private runner scale set
+        env:
+          RUNNER_IMAGE: ${{ inputs.runner_image_repository }}:${{ inputs.runner_image_tag }}
+        run: |
+          helm upgrade --install "${RUNNER_SCALE_SET_NAME}" \
+            oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+            --namespace "${ARC_NAMESPACE}" \
+            --create-namespace \
+            --set-string "githubConfigUrl=https://github.com/${GITHUB_REPOSITORY}" \
+            --set-string "githubConfigSecret=github-runners-auth" \
+            --set-string "runnerScaleSetName=${RUNNER_SCALE_SET_NAME}" \
+            --set "minRunners=1" \
+            --set "maxRunners=5" \
+            --set "containerMode.type=dind" \
+            --set-string "template.spec.containers[0].name=runner" \
+            --set-string "template.spec.containers[0].image=${RUNNER_IMAGE}" \
+            --wait \
+            --timeout 10m

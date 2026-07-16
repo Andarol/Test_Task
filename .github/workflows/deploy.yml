@@ -1,24 +1,186 @@
-name: Deploy staging
+name: Deploy
 
 on:
   workflow_dispatch:
-
-concurrency:
-  group: order-service-release-staging
-  cancel-in-progress: false
+    inputs:
+      environment:
+        description: Environment to deploy.
+        required: true
+        default: stage
+        type: choice
+        options:
+          - stage
+          - prod
+      image_repository:
+        description: Artifact Registry image repository.
+        required: true
+        type: string
+      image_tag:
+        description: Git SHA image tag to deploy.
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
+env:
+  GCP_REGION: europe-west3
+  TERRAGRUNT_VERSION: 0.76.7
+
 jobs:
-  release:
-    name: Build and deploy staging
-    uses: ./.github/workflows/deploy-environment.yml
-    with:
-      environment: staging
-      build_image: true
-      image_tag: ${{ github.sha }}
-    permissions:
-      contents: write
-      id-token: write
+  terraform-plan:
+    name: Terraform plan
+    runs-on: [self-hosted, linux, gke-private]
+    outputs:
+      terragrunt-directory: ${{ steps.environment.outputs.terragrunt-directory }}
+      cluster-name: ${{ steps.environment.outputs.cluster-name }}
+      values-file: ${{ steps.environment.outputs.values-file }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure deployment uses main
+        run: |
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Deployments are only allowed from main. Current ref: ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+      - name: Resolve environment
+        id: environment
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "${TARGET_ENVIRONMENT}" in
+            stage)
+              echo "terragrunt-directory=environments/staging/europe-west3" >> "${GITHUB_OUTPUT}"
+              echo "cluster-name=order-staging-europe-west3-gke" >> "${GITHUB_OUTPUT}"
+              echo "values-file=gitops/environments/staging/order-service-values.yaml" >> "${GITHUB_OUTPUT}"
+              ;;
+            prod)
+              echo "terragrunt-directory=environments/production/europe-west3" >> "${GITHUB_OUTPUT}"
+              echo "cluster-name=order-production-europe-west3-gke" >> "${GITHUB_OUTPUT}"
+              echo "values-file=gitops/environments/production/order-service-values.yaml" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "Unsupported environment: ${TARGET_ENVIRONMENT}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_TERRAFORM_SERVICE_ACCOUNT }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_amd64" \
+            -o "${RUNNER_TEMP}/bin/terragrunt"
+          chmod +x "${RUNNER_TEMP}/bin/terragrunt"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Terraform plan
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          GKE_ADMIN_CIDR: ${{ vars.GKE_ADMIN_CIDR }}
+          TG_WORKING_DIR: ${{ steps.environment.outputs.terragrunt-directory }}
+        run: terragrunt run --working-dir "${TG_WORKING_DIR}" plan -input=false -no-color
+
+  terraform-apply:
+    name: Terraform apply
+    needs: terraform-plan
+    runs-on: [self-hosted, linux, gke-private]
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_TERRAFORM_SERVICE_ACCOUNT }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_amd64" \
+            -o "${RUNNER_TEMP}/bin/terragrunt"
+          chmod +x "${RUNNER_TEMP}/bin/terragrunt"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Terraform apply
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          GKE_ADMIN_CIDR: ${{ vars.GKE_ADMIN_CIDR }}
+          TG_WORKING_DIR: ${{ needs.terraform-plan.outputs.terragrunt-directory }}
+        run: terragrunt run --working-dir "${TG_WORKING_DIR}" apply -input=false -auto-approve
+
+  deploy:
+    name: Deploy ${{ inputs.environment }}
+    needs:
+      - terraform-plan
+      - terraform-apply
+    runs-on: [self-hosted, linux, gke-private]
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Get cluster credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ needs.terraform-plan.outputs.cluster-name }}
+          location: ${{ env.GCP_REGION }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Capture current production revision
+        if: inputs.environment == 'prod'
+        id: current-release
+        run: |
+          revision="$(helm history order-service -n order-service -o json 2>/dev/null | jq -r '.[-1].revision // empty')"
+          echo "revision=${revision}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy application
+        uses: ./.github/actions/deploy-order-service
+        with:
+          environment: ${{ inputs.environment }}
+          values-file: ${{ needs.terraform-plan.outputs.values-file }}
+          image-repository: ${{ inputs.image_repository }}
+          image-tag: ${{ inputs.image_tag }}
+          gcp-project-id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Smoke test
+        uses: ./.github/actions/smoke-test
+
+      - name: Roll back failed production deployment
+        if: failure() && inputs.environment == 'prod' && steps.current-release.outputs.revision != ''
+        run: |
+          helm rollback order-service "${{ steps.current-release.outputs.revision }}" \
+            --namespace order-service \
+            --wait \
+            --timeout 10m

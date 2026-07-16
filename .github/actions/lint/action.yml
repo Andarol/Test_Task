@@ -1,0 +1,26 @@
+name: Lint repository
+description: Run static checks for Go, Terraform, and Helm sources.
+runs:
+  using: composite
+  steps:
+    - name: Check Go formatting
+      shell: bash
+      run: |
+        unformatted="$(gofmt -l app)"
+        if [[ -n "${unformatted}" ]]; then
+          echo "Go files need formatting:"
+          echo "${unformatted}"
+          exit 1
+        fi
+
+    - name: Check Terraform formatting
+      shell: bash
+      run: terraform fmt -check -recursive terraform environments
+
+    - name: Lint Helm charts
+      shell: bash
+      run: |
+        helm lint charts/order-service
+        helm lint charts/app-of-apps
+        helm template order-service charts/order-service >/dev/null
+        helm template app-of-apps charts/app-of-apps >/dev/null

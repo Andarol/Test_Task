@@ -1,55 +1,41 @@
 variable "project_id" {
-  type        = string
-  description = "Google Cloud project ID."
+  type = string
 }
 
 variable "name" {
-  type        = string
-  description = "Resource name prefix."
+  type = string
 }
 
 variable "region" {
-  type        = string
-  description = "Region for regional networking resources."
+  type = string
 }
 
-variable "network_id" {
-  type        = string
-  description = "Shared foundation VPC ID."
+variable "gke_subnet_cidr" {
+  type = string
 }
 
-variable "network_name" {
-  type        = string
-  description = "Shared foundation VPC name."
+variable "gke_pods_cidr" {
+  type = string
 }
 
-variable "node_cidr" {
-  type        = string
-  description = "Primary IPv4 range for GKE nodes."
+variable "gke_services_cidr" {
+  type = string
 }
 
-variable "pod_cidr" {
-  type        = string
-  description = "Secondary IPv4 range for GKE pods."
+variable "sql_subnet_cidr" {
+  type = string
 }
 
-variable "service_cidr" {
-  type        = string
-  description = "Secondary IPv4 range for Kubernetes Services."
+variable "private_service_cidr" {
+  type = string
 }
 
-variable "database_service_cidr" {
-  type        = string
-  description = "Shared foundation Private Service Access range used by Cloud SQL."
-}
-
-variable "master_cidr" {
-  type        = string
-  description = "GKE control-plane /28 range."
-}
-
-variable "trusted_ingress_cidrs" {
+variable "admin_cidrs" {
   type        = list(string)
-  description = "Management and VPN CIDRs allowed to reach GKE nodes."
-  default     = []
+  description = "CIDRs allowed to reach the private GKE control plane."
+}
+
+variable "labels" {
+  type    = map(string)
+  default = {}
 }
