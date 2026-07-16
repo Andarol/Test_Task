@@ -24,11 +24,11 @@ terraform {
   source = "../../../terraform//stacks/global"
 }
 
-dependency "regional" {
-  config_path = "../${local.environment.locals.region}"
+dependency "cluster" {
+  config_path = "../${local.environment.locals.region}/cluster"
   mock_outputs = {
     neg_name           = "order-service-${local.environment.locals.environment}-europe-west3"
-    gke_node_locations = ["europe-west3-a", "europe-west3-b"]
+    gke_node_locations = ["europe-west3-a", "europe-west3-b", "europe-west3-c"]
   }
   mock_outputs_allowed_terraform_commands = ["validate"]
 }
@@ -39,8 +39,8 @@ inputs = merge(local.environment.locals.common_inputs, {
   waf_rate_limit_requests_per_min = local.environment.locals.waf_rate_limit_requests_per_min
   regions = {
     (local.environment.locals.region) = {
-      neg_name        = dependency.regional.outputs.neg_name
-      zones           = dependency.regional.outputs.gke_node_locations
+      neg_name        = dependency.cluster.outputs.neg_name
+      zones           = dependency.cluster.outputs.gke_node_locations
       capacity_scaler = local.environment.locals.regions[local.environment.locals.region].capacity_scaler
     }
   }

@@ -3,11 +3,6 @@ variable "project_id" {
   description = "Google Cloud project ID."
 }
 
-variable "project_number" {
-  type        = string
-  description = "Numeric Google Cloud project number."
-}
-
 variable "name" {
   type        = string
   description = "Cloud SQL instance name."
@@ -56,18 +51,6 @@ variable "backup_retention_count" {
   type        = number
   description = "Number of automated backups retained."
   default     = 30
-}
-
-variable "kubernetes_namespace" {
-  type        = string
-  description = "Namespace containing the application Kubernetes ServiceAccount."
-  default     = "order-service"
-}
-
-variable "kubernetes_service_account" {
-  type        = string
-  description = "Kubernetes ServiceAccount allowed to read the database secret."
-  default     = "order-service"
 }
 
 variable "labels" {

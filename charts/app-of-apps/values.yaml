@@ -2,4 +2,5 @@ repoURL: ""
 targetRevision: main
 environment: staging
 region: europe-west3
-orderService: {}
+orderService:
+  enabled: false

@@ -58,21 +58,3 @@ resource "google_secret_manager_secret_version" "ca" {
   secret      = google_secret_manager_secret.ca.id
   secret_data = google_redis_instance.this.server_ca_certs[0].cert
 }
-
-locals {
-  workload_identity_principal = "principal://iam.googleapis.com/projects/${var.project_number}/locations/global/workloadIdentityPools/${var.project_id}.svc.id.goog/subject/ns/${var.kubernetes_namespace}/sa/${var.kubernetes_service_account}"
-}
-
-resource "google_secret_manager_secret_iam_member" "auth" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.auth.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = local.workload_identity_principal
-}
-
-resource "google_secret_manager_secret_iam_member" "ca" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.ca.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = local.workload_identity_principal
-}

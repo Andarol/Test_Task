@@ -44,54 +44,9 @@ variable "argocd_hostname" {
   description = "Private hostname used while tunnelling to the Argo CD service."
 }
 
-variable "image_repository" {
+variable "gitops_values_file" {
   type        = string
-  description = "Regional Artifact Registry image repository."
-}
-
-variable "image_tag" {
-  type        = string
-  description = "Immutable application image tag deployed by Argo CD."
-}
-
-variable "neg_name" {
-  type        = string
-  description = "Standalone NEG name requested by the application Service."
-}
-
-variable "cloudsql_private_ip" {
-  type        = string
-  description = "Private IP of the shared Cloud SQL primary."
-}
-
-variable "database_service_cidr" {
-  type        = string
-  description = "Private Service Access CIDR containing Cloud SQL."
-}
-
-variable "database_password_secret_id" {
-  type        = string
-  description = "Secret Manager database password secret ID."
-}
-
-variable "redis_host" {
-  type        = string
-  description = "Private Redis endpoint."
-}
-
-variable "redis_port" {
-  type        = number
-  description = "TLS Redis port."
-}
-
-variable "redis_auth_secret_id" {
-  type        = string
-  description = "Secret Manager Redis AUTH secret ID."
-}
-
-variable "redis_ca_secret_id" {
-  type        = string
-  description = "Secret Manager Redis CA secret ID."
+  description = "Repository-relative values file consumed directly by the Argo CD root application."
 }
 
 variable "cert_manager_chart_version" {

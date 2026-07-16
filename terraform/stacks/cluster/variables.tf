@@ -23,11 +23,6 @@ variable "network_name" {
   description = "Shared foundation VPC name."
 }
 
-variable "image_repository" {
-  type        = string
-  description = "Shared Artifact Registry image repository without tag."
-}
-
 variable "node_cidr" {
   type        = string
   description = "Primary range for regional GKE nodes."
@@ -48,24 +43,9 @@ variable "database_service_cidr" {
   description = "Shared foundation Private Service Access range containing Cloud SQL."
 }
 
-variable "cloudsql_private_ip" {
-  type        = string
-  description = "Private IP of the single shared Cloud SQL primary."
-}
-
 variable "database_password_secret_id" {
   type        = string
   description = "Secret ID for the single shared database password."
-}
-
-variable "redis_host" {
-  type        = string
-  description = "Private endpoint of the one shared Redis cache."
-}
-
-variable "redis_port" {
-  type        = number
-  description = "TLS port of the shared Redis cache."
 }
 
 variable "redis_auth_secret_id" {

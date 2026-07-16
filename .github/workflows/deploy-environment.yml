@@ -1,84 +1,100 @@
-name: Deploy environment
+name: Release application environment
 
 on:
   workflow_call:
     inputs:
       environment:
-        description: Deployment environment defined under environments/
-        required: true
-        type: string
-      image_tag:
-        description: Immutable image tag built once by the bootstrap runner
+        description: Environment under gitops/environments
         required: true
         type: string
 
 permissions:
-  contents: read
-
-env:
-  TF_IN_AUTOMATION: "true"
-  TF_INPUT: "false"
-  TERRAGRUNT_NON_INTERACTIVE: "true"
-  REGION: europe-west3
-  PROJECT_ID: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_PROJECT_ID || vars.GCP_PRODUCTION_PROJECT_ID }}
-  WIF_PROVIDER: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
-  TERRAFORM_SA: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_TERRAFORM_SA || vars.GCP_PRODUCTION_TERRAFORM_SA }}
+  contents: write
+  id-token: write
 
 jobs:
-  apply-infrastructure:
-    name: Apply ${{ inputs.environment }} infrastructure
+  release:
+    name: Build image and update GitOps
     runs-on: [self-hosted, linux, gcp, ci]
-    environment: ${{ format('{0}-infrastructure', inputs.environment) }}
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/terragrunt-apply
-        with:
-          environment: ${{ inputs.environment }}
-          working_directories: |
-            environments/${{ inputs.environment }}/foundation
-            environments/${{ inputs.environment }}/europe-west3
-          project_id: ${{ env.PROJECT_ID }}
-          workload_identity_provider: ${{ env.WIF_PROVIDER }}
-          service_account: ${{ env.TERRAFORM_SA }}
-
-  apply-platform:
-    name: Apply ${{ inputs.environment }} Rancher and Argo CD
-    needs: apply-infrastructure
-    runs-on: [self-hosted, linux, gcp, europe-west3]
     environment: ${{ inputs.environment }}
-    permissions:
-      contents: read
-      id-token: write
+    env:
+      REGION: europe-west3
+      PROJECT_ID: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_PROJECT_ID || vars.GCP_PRODUCTION_PROJECT_ID }}
+      WIF_PROVIDER: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
+      DEPLOY_SA: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_DEPLOY_SA || vars.GCP_PRODUCTION_DEPLOY_SA }}
+      VALUES_FILE: gitops/environments/${{ inputs.environment }}/values.yaml
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/terragrunt-apply
         with:
-          environment: ${{ inputs.environment }}
-          working_directories: environments/${{ inputs.environment }}/europe-west3/platform
-          project_id: ${{ env.PROJECT_ID }}
-          workload_identity_provider: ${{ env.WIF_PROVIDER }}
-          service_account: ${{ env.TERRAFORM_SA }}
-          image_tag: ${{ inputs.image_tag }}
+          ref: main
+          fetch-depth: 0
 
-  apply-global-infrastructure:
-    name: Apply ${{ inputs.environment }} global load balancer
-    needs: apply-platform
-    runs-on: [self-hosted, linux, gcp, ci]
-    environment: ${{ format('{0}-infrastructure', inputs.environment) }}
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/terragrunt-apply
+      - uses: actions/setup-go@v5
         with:
-          environment: ${{ inputs.environment }}
-          working_directories: environments/${{ inputs.environment }}/global
+          go-version-file: go.mod
+          cache: true
+      - name: Verify application
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+
+      - uses: google-github-actions/auth@v3
+        with:
           project_id: ${{ env.PROJECT_ID }}
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
-          service_account: ${{ env.TERRAFORM_SA }}
-          attempts: "10"
-          retry_delay_seconds: "30"
+          service_account: ${{ env.DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+
+      - name: Build and push immutable image
+        env:
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/order-service/order-service:${{ github.sha }}
+        run: |
+          if ! gcloud artifacts docker images describe "$IMAGE" >/dev/null 2>&1; then
+            docker build --tag "$IMAGE" .
+            docker push "$IMAGE"
+          fi
+
+      - name: Record image in GitOps values
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          python3 - "$VALUES_FILE" "$IMAGE_TAG" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          tag = sys.argv[2]
+          source = path.read_text()
+          if re.search(r"(?m)^  enabled: false$", source):
+              raise SystemExit(f"{path} is disabled until its foundation outputs are configured")
+          updated, count = re.subn(
+              r"(?m)^(  image:\n    repository: [^\n]+\n    tag:) [^\n]+$",
+              rf"\1 {tag}",
+              source,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f"could not update image tag in {path}")
+          path.write_text(updated)
+          PY
+
+      - name: Push GitOps release to main
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if git diff --quiet -- "$VALUES_FILE"; then
+            echo "GitOps already references $GITHUB_SHA"
+            exit 0
+          fi
+          git config user.name "order-service-gitops[bot]"
+          git config user.email "order-service-gitops[bot]@users.noreply.github.com"
+          git add "$VALUES_FILE"
+          git commit -m "chore(gitops): deploy $ENVIRONMENT $GITHUB_SHA"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Deployment handoff
+        run: echo "Argo CD will reconcile $VALUES_FILE from main; no Terraform or kubectl application step is required."

@@ -12,8 +12,8 @@ spec:
     targetRevision: {{ .Values.targetRevision | quote }}
     path: charts/app-of-apps
     helm:
-      values: |
-{{ toYaml .Values.appValues | indent 8 }}
+      valueFiles:
+        - {{ printf "../../%s" .Values.valuesFile | quote }}
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

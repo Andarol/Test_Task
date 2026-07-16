@@ -1,0 +1,49 @@
+name: Provision infrastructure component
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      component:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    name: Terragrunt apply
+    runs-on: ${{ inputs.component == 'gitops' && fromJSON('["self-hosted","linux","gcp","europe-west3"]') || fromJSON('["self-hosted","linux","gcp","ci"]') }}
+    environment: ${{ inputs.component == 'gitops' && inputs.environment || format('{0}-infrastructure', inputs.environment) }}
+    env:
+      PROJECT_ID: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_PROJECT_ID || vars.GCP_PRODUCTION_PROJECT_ID }}
+      WIF_PROVIDER: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
+      TERRAFORM_SA: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_TERRAFORM_SA || vars.GCP_PRODUCTION_TERRAFORM_SA }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select isolated Terragrunt state
+        id: target
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          case "$COMPONENT" in
+            foundation) directory="environments/$ENVIRONMENT/foundation" ;;
+            cluster)    directory="environments/$ENVIRONMENT/europe-west3/cluster" ;;
+            gitops)     directory="environments/$ENVIRONMENT/europe-west3/gitops" ;;
+            global)     directory="environments/$ENVIRONMENT/global" ;;
+            *) echo "Unsupported component: $COMPONENT" >&2; exit 2 ;;
+          esac
+          echo "directory=$directory" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/terragrunt-apply
+        with:
+          environment: ${{ inputs.environment }}
+          working_directories: ${{ steps.target.outputs.directory }}
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TERRAFORM_SA }}

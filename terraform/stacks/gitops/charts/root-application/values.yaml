@@ -1,4 +1,4 @@
 name: order-service
 repoURL: ""
 targetRevision: main
-appValues: {}
+valuesFile: gitops/environments/staging/values.yaml

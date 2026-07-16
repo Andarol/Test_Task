@@ -21,37 +21,10 @@ provider "helm" {
 
 locals {
   labels = {
-    application = "platform"
+    application = "gitops"
     environment = var.environment
     region      = var.region
     managed_by  = "terragrunt"
-  }
-
-  application_values = {
-    repoURL        = var.git_repository_url
-    targetRevision = var.git_revision
-    environment    = var.environment
-    region         = var.region
-    orderService = {
-      image = {
-        repository = var.image_repository
-        tag        = var.image_tag
-      }
-      projectId = var.project_id
-      region    = var.region
-      negName   = var.neg_name
-      database = {
-        host     = var.cloudsql_private_ip
-        cidr     = var.database_service_cidr
-        secretId = var.database_password_secret_id
-      }
-      redis = {
-        host         = var.redis_host
-        port         = var.redis_port
-        authSecretId = var.redis_auth_secret_id
-        caSecretId   = var.redis_ca_secret_id
-      }
-    }
   }
 }
 
@@ -180,7 +153,7 @@ resource "helm_release" "root_application" {
     name           = "order-service-${var.environment}"
     repoURL        = var.git_repository_url
     targetRevision = var.git_revision
-    appValues      = local.application_values
+    valuesFile     = var.gitops_values_file
   })]
 
   depends_on = [helm_release.argocd]

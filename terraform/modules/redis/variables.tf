@@ -3,11 +3,6 @@ variable "project_id" {
   description = "Google Cloud project ID."
 }
 
-variable "project_number" {
-  type        = string
-  description = "Google Cloud numeric project ID used for GKE Workload Identity principals."
-}
-
 variable "name" {
   type        = string
   description = "Memorystore instance name."
@@ -43,16 +38,4 @@ variable "labels" {
   type        = map(string)
   description = "User labels for the Redis instance and secrets."
   default     = {}
-}
-
-variable "kubernetes_namespace" {
-  type        = string
-  description = "Namespace of the workload allowed to read Redis secrets."
-  default     = "order-service"
-}
-
-variable "kubernetes_service_account" {
-  type        = string
-  description = "Kubernetes ServiceAccount allowed to read Redis secrets."
-  default     = "order-service"
 }

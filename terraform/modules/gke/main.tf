@@ -35,6 +35,13 @@ resource "google_container_cluster" "this" {
   remove_default_node_pool = true
   deletion_protection      = true
 
+  # GKE must create a temporary default pool before removing it. Keep that
+  # bootstrap pool on standard disks so it does not consume SSD quota.
+  node_config {
+    disk_type    = "pd-standard"
+    disk_size_gb = 20
+  }
+
   networking_mode   = "VPC_NATIVE"
   datapath_provider = "ADVANCED_DATAPATH"
 
@@ -150,8 +157,8 @@ resource "google_container_node_pool" "application" {
   node_config {
     machine_type    = var.machine_type
     image_type      = "COS_CONTAINERD"
-    disk_type       = "pd-balanced"
-    disk_size_gb    = 100
+    disk_type       = "pd-standard"
+    disk_size_gb    = 50
     service_account = google_service_account.nodes.email
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     tags            = [var.node_network_tag]

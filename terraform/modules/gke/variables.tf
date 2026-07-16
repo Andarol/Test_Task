@@ -62,8 +62,8 @@ variable "node_locations" {
   description = "Zones used by the regional GKE cluster and application node pool."
 
   validation {
-    condition     = length(var.node_locations) == 2
-    error_message = "The application node pool must use exactly two zones."
+    condition     = length(var.node_locations) == 3
+    error_message = "The application node pool must use exactly three zones."
   }
 }
 

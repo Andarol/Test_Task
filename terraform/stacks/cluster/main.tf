@@ -3,6 +3,10 @@ provider "google" {
   region  = var.region
 }
 
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
 locals {
   name = "order-${var.environment}-${var.region}"
   labels = {
@@ -47,4 +51,19 @@ module "gke" {
   min_nodes_per_zone         = var.gke_min_nodes_per_zone
   max_nodes_per_zone         = var.gke_max_nodes_per_zone
   labels                     = local.labels
+}
+
+resource "google_secret_manager_secret_iam_member" "application" {
+  for_each = toset([
+    var.database_password_secret_id,
+    var.redis_auth_secret_id,
+    var.redis_ca_secret_id,
+  ])
+
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${var.project_id}.svc.id.goog/subject/ns/order-service-${var.environment}/sa/order-service"
+
+  depends_on = [module.gke]
 }

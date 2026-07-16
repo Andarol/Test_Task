@@ -1,179 +1,130 @@
-# Order Service — manual runner bootstrap and two private GKE environments
+# Order Service — private GKE with independent infrastructure and GitOps releases
 
-The platform has one explicit bootstrap boundary and two runtime environments:
+The repository has three deliberately separate lifecycles:
 
-1. A one-time local Terragrunt bootstrap creates the shared management VPC, WireGuard VPN, Artifact Registry, and persistent GitHub self-hosted runner.
-2. After that runner is online, GitHub Actions manually deploys staging and production. Normal workflows never manage the runner stack.
+1. `environments/bootstrap/runner` creates the shared VPN, registry, and persistent self-hosted GitHub runner once.
+2. `.github/workflows/provision-infrastructure.yml` applies exactly one long-lived Terragrunt component selected by the operator: `foundation`, `cluster`, `gitops`, or `global`.
+3. `.github/workflows/deploy.yml` builds an immutable application image and changes only the matching file under `gitops/environments/`. Argo CD then reconciles the custom Helm chart from Git.
 
-No container is started on the operator laptop. Docker/BuildKit runs only on the GCP self-hosted runner.
+An application release never applies Terraform and never calls `kubectl apply`. No container is started on the operator laptop; image builds run on the GCP self-hosted runner.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-  Admin["Administrator laptop"] -->|"one WireGuard VPN"| VPN["WireGuard gateway"]
-
-  subgraph Management["Shared management VPC — europe-west3"]
-    VPN
-    Runner["GitHub self-hosted runner"]
-    Registry["Artifact Registry"]
-  end
-
-  Runner --> Registry
+  Admin["Administrator"] -->|"one WireGuard VPN"| VPN["WireGuard gateway"]
+  Runner["Persistent self-hosted GitHub runner"] --> Registry["Artifact Registry"]
   Runner --> StageAPI["Staging private GKE API"]
   Runner --> ProdAPI["Production private GKE API"]
   VPN --> StageAPI
   VPN --> ProdAPI
 
-  subgraph Stage["Staging"]
-    StageAPI --> StageGKE["GKE workers: europe-west3-a + europe-west3-b"]
-    StageGKE --> StageRancher["Rancher staging"]
-    StageGKE --> StageArgo["Argo CD staging"]
-    StageGKE --> StageDB["Cloud SQL staging"]
-    StageGKE --> StageRedis["Redis staging"]
+  subgraph Staging["Staging — europe-west3"]
+    StageAPI --> StageWorkers["Workers in zones a + b + c"]
+    StageWorkers --> StageArgo["Argo CD"]
+    StageWorkers --> StageRancher["Rancher"]
+    StageWorkers --> StageApp["order-service custom chart"]
+    StageApp --> StageDB["Regional HA Cloud SQL"]
+    StageApp --> StageRedis["Redis cache"]
   end
 
-  subgraph Production["Production"]
-    ProdAPI --> ProdGKE["GKE workers: europe-west3-a + europe-west3-b"]
-    ProdGKE --> ProdRancher["Rancher production"]
-    ProdGKE --> ProdArgo["Argo CD production"]
-    ProdGKE --> ProdDB["Cloud SQL production"]
-    ProdGKE --> ProdRedis["Redis production"]
+  subgraph Production["Production — europe-west3"]
+    ProdAPI --> ProdWorkers["Workers in zones a + b + c"]
+    ProdWorkers --> ProdArgo["Argo CD"]
+    ProdWorkers --> ProdRancher["Rancher"]
   end
+
+  Git["gitops/environments/ENV/values.yaml"] --> StageArgo
+  Git --> ProdArgo
 ```
 
-The worker node pools use exactly two zones. GKE still manages the regional control plane topology; `node_locations` controls the two worker zones.
-
-Staging and production do not share application data. Each has its own regional-HA Cloud SQL instance, Redis instance, secrets, GKE cluster, Rancher, and Argo CD. The application namespaces (`order-service-staging` and `order-service-production`) also produce distinct Workload Identity principals, so one environment cannot read the other's Secret Manager values. They share only management networking, the VPN, runner, and immutable image repository.
+GKE manages the regional control planes. Terraform manages a separate autoscaling worker pool spread across three zones. The cluster state is long-lived and is not touched by normal application releases.
 
 ## Repository layout
 
 ```text
 environments/
-├── bootstrap/
-│   └── runner/terragrunt.hcl       # invoked once, manually
+├── bootstrap/runner/terragrunt.hcl          # one-time runner/VPN bootstrap
 ├── staging/
-│   ├── foundation/terragrunt.hcl   # staging SQL/Redis
+│   ├── foundation/terragrunt.hcl            # Cloud SQL and Redis
 │   ├── europe-west3/
-│   │   ├── terragrunt.hcl          # staging GKE in two worker AZs
-│   │   └── platform/terragrunt.hcl # staging Rancher/Argo CD
-│   └── global/terragrunt.hcl       # staging LB/WAF
-└── production/                     # same independent runtime states
+│   │   ├── cluster/terragrunt.hcl           # GKE control plane and workers
+│   │   └── gitops/terragrunt.hcl            # Rancher, Argo CD, root Application
+│   └── global/terragrunt.hcl                # load balancer and WAF
+└── production/                              # same isolated states
 
-terraform/
-├── bootstrap/                      # APIs, state bucket, WIF, CI identities
-├── modules/
-│   ├── github-runner/              # standalone runner VM module
-│   ├── wireguard-vpn/              # single client-to-site VPN module
-│   ├── gke/
-│   ├── cloudsql/
-│   └── redis/
-└── stacks/
-    ├── management/                 # shared VPC/VPN/runner/registry
-    ├── foundation/
-    ├── regional/
-    ├── platform/
-    └── global/
+terraform/stacks/
+├── management/
+├── foundation/
+├── cluster/
+├── gitops/
+└── global/
+
+gitops/environments/
+├── staging/values.yaml
+└── production/values.yaml
 
 charts/
 ├── app-of-apps/
 └── order-service/
 ```
 
-Remote state prefixes are independent:
+For compatibility with the already-created infrastructure, the renamed `cluster` and `gitops` directories retain the existing GCS state prefixes:
 
 ```text
-bootstrap/runner/terraform.tfstate
-staging/foundation/terraform.tfstate
 staging/europe-west3/terraform.tfstate
 staging/europe-west3/platform/terraform.tfstate
-staging/global/terraform.tfstate
-production/foundation/terraform.tfstate
 production/europe-west3/terraform.tfstate
 production/europe-west3/platform/terraform.tfstate
-production/global/terraform.tfstate
 ```
 
-## One-time manual bootstrap
+The directory names are now explicit while existing cloud resources remain attached to their original states.
 
-Requirements:
+## One-time runner bootstrap
 
-- Terraform 1.10+ and Terragrunt 1.0.4+;
-- Google Cloud CLI authenticated with `gcloud auth login`;
-- GitHub CLI authenticated for `Andarol/Test_Task`;
-- `wg` only for generating the administrator client key pair;
-- no local Docker daemon.
-
-Generate the client key pair once and keep the private key outside the repository:
+Requirements are Terraform 1.10+, Terragrunt 1.0.4+, authenticated `gcloud` and `gh`, plus `wg` for generating the administrator key. Docker is not required locally.
 
 ```bash
 umask 077
 wg genkey | tee ~/.config/wireguard/order-client.key |
   wg pubkey > ~/.config/wireguard/order-client.pub
-```
 
-Run the manual bootstrap:
-
-```bash
 export GCP_PROJECT_ID="project-03272afe-c622-4c2b-868"
 export WIREGUARD_CLIENT_PUBLIC_KEY="$(cat ~/.config/wireguard/order-client.pub)"
-
-# Required: restrict UDP/51820 to the administrator's public IP.
-export WIREGUARD_ALLOWED_SOURCE_CIDR="YOUR_PUBLIC_IP/32"
-
 make bootstrap-runner
 ```
 
-`scripts/bootstrap-runner.sh` performs only the first-run work:
+UDP/51820 accepts connections from dynamic public addresses because the administrator uses DHCP. WireGuard still admits only the configured cryptographic peer.
 
-1. enables APIs and creates the versioned GCS state bucket;
-2. creates GitHub WIF and CI service accounts;
-3. creates the shared VPC, PSA ranges, NAT, Artifact Registry, VPN VM, and runner VM;
-4. passes the short-lived GitHub registration token through Secret Manager;
-5. waits until `order-github-runner` is online and destroys that token version;
-6. writes the staging and production GitHub repository variables.
+## Infrastructure provisioning
 
-The runner archive is pinned to GitHub Actions Runner `2.335.1` and verified using its official SHA-256 digest.
+Run `Manual infrastructure component` and choose one environment and one component. Components are intentionally not chained, so changing GitOps does not recreate the cluster and changing the application does not run Terragrunt.
 
-The bootstrap runner state is intentionally outside the normal environment workflow. Do not add `environments/bootstrap/runner` to `deploy-environment.yml`.
+Initial order for an environment:
 
-## WireGuard client
-
-Read the server public key after bootstrap:
-
-```bash
-gcloud compute instances get-serial-port-output order-wireguard \
-  --zone=europe-west3-a |
-  grep WIREGUARD_SERVER_PUBLIC_KEY |
-  tail -1
+```text
+foundation → cluster → gitops → application release → global
 ```
 
-Example client configuration:
+`global` is applied after the first Argo CD sync because its load-balancer backend reads the NEGs created by the application Service.
 
-```ini
-[Interface]
-Address = 10.250.0.2/32
-PrivateKey = CLIENT_PRIVATE_KEY
+Production application reconciliation is disabled in `gitops/environments/production/values.yaml` until its foundation outputs are recorded there. This prevents Argo CD from deploying with blank database or Redis endpoints.
 
-[Peer]
-PublicKey = SERVER_PUBLIC_KEY
-Endpoint = VPN_PUBLIC_IP:51820
-AllowedIPs = 10.0.0.0/24, 10.10.0.0/20, 10.20.0.0/16, 10.21.0.0/20, 10.90.0.0/16, 10.110.0.0/20, 10.120.0.0/16, 10.121.0.0/20, 10.190.0.0/16, 172.16.0.0/28, 172.17.0.0/28
-PersistentKeepalive = 25
+## Application release
+
+Run `Manual application release` and choose `staging` or `production`. The reusable environment workflow:
+
+```text
+verify Go code → build/push GIT_SHA → update gitops values → push main
+                                                        ↓
+                                                 Argo CD sync
 ```
 
-Get `VPN_PUBLIC_IP` from:
+Only the image tag changes during a normal release. Terraform owns Rancher, Argo CD, and the root Application; Argo CD exclusively owns the application chart and observability resources.
 
-```bash
-cd environments/bootstrap/runner
-terragrunt run -- output -raw vpn_public_ip
-```
+## Private access
 
-## Private Rancher and Argo CD access
-
-Neither Rancher nor Argo CD receives a public ingress. Connect WireGuard first, then obtain private cluster credentials and create a local tunnel.
-
-Staging:
+Connect WireGuard, fetch internal cluster credentials, and open local tunnels:
 
 ```bash
 gcloud container clusters get-credentials order-staging-europe-west3-gke \
@@ -183,39 +134,9 @@ kubectl -n cattle-system port-forward service/rancher 9443:443
 kubectl -n argocd port-forward service/argocd-server 8443:443
 ```
 
-Production uses `order-production-europe-west3-gke` and the same commands. Add these local host mappings while the tunnels are active:
-
-```text
-127.0.0.1 rancher.staging.internal argocd.staging.internal
-127.0.0.1 rancher.production.internal argocd.production.internal
-```
-
-Rancher is available at `https://rancher.ENVIRONMENT.internal:9443`; Argo CD is available at `https://argocd.ENVIRONMENT.internal:8443`.
-
-Initial Rancher passwords are stored in Secret Manager as:
-
-- `order-staging-rancher-bootstrap`
-- `order-production-rancher-bootstrap`
-
-## Manual runtime deployment
-
-`.github/workflows/deploy.yml` has no push trigger. After the bootstrap runner is online, start `Manual two-environment provision and deploy` with `workflow_dispatch` and select `staging`, `production`, or `all`.
-
-The self-hosted runner executes:
-
-```text
-validate
-  → build the image once
-  → push GIT_SHA to Artifact Registry
-  → Terragrunt staging foundation/GKE/platform/global
-  → Terragrunt production foundation/GKE/platform/global
-```
-
-The environment workflow runs only `terragrunt run -- apply`. It never calls `kubectl apply`. Terraform Helm providers install cert-manager, Rancher, Argo CD, and the root app-of-apps Application. Argo CD reconciles the custom application chart and observability resources from Git.
+Production uses `order-production-europe-west3-gke`. Rancher bootstrap passwords are stored in Secret Manager as `order-staging-rancher-bootstrap` and `order-production-rancher-bootstrap`.
 
 ## Static checks
-
-These checks do not start containers or contact a Kubernetes cluster:
 
 ```bash
 go test -race ./...
@@ -223,7 +144,5 @@ go vet ./...
 terraform fmt -check -recursive terraform
 make terraform-validate
 terragrunt hcl fmt --check
-terragrunt hcl validate
 make charts-validate
-jq empty observability/dashboard.json
 ```

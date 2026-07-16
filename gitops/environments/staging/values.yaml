@@ -1,0 +1,32 @@
+repoURL: https://github.com/Andarol/Test_Task.git
+targetRevision: main
+environment: staging
+region: europe-west3
+
+orderService:
+  enabled: true
+  image:
+    repository: europe-west3-docker.pkg.dev/project-03272afe-c622-4c2b-868/order-service/order-service
+    tag: c18a2dbc55f827a2e70f77bb7a7e9ca048a0a23a
+  projectId: project-03272afe-c622-4c2b-868
+  region: europe-west3
+  negName: order-service-staging-europe-west3
+  database:
+    host: 10.90.0.2
+    port: 5432
+    name: orders
+    user: order_service
+    cidr: 10.90.0.0/16
+    secretId: order-staging-postgres-password
+  redis:
+    host: 10.90.40.156
+    port: 6378
+    authSecretId: order-staging-redis-auth
+    caSecretId: order-staging-redis-ca
+  replicaCount: 4
+  cacheTTL: 60s
+  autoscaling:
+    minReplicas: 4
+    maxReplicas: 15
+    cpuUtilization: 65
+    memoryUtilization: 75

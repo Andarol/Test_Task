@@ -9,7 +9,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl docker.io git jq
+apt-get install -y build-essential ca-certificates curl docker.io git jq unzip
 systemctl enable --now docker
 
 id actions >/dev/null 2>&1 || useradd --create-home --shell /bin/bash actions

@@ -1,0 +1,40 @@
+name: Manual infrastructure component
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Infrastructure environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      component:
+        description: Long-lived component to provision or change
+        required: true
+        type: choice
+        options:
+          - foundation
+          - cluster
+          - gitops
+          - global
+
+concurrency:
+  group: order-service-infrastructure-${{ inputs.environment }}-${{ inputs.component }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    name: Apply ${{ inputs.environment }}/${{ inputs.component }}
+    uses: ./.github/workflows/provision-component.yml
+    with:
+      environment: ${{ inputs.environment }}
+      component: ${{ inputs.component }}
+    permissions:
+      contents: read
+      id-token: write

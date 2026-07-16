@@ -11,7 +11,8 @@ done
 
 : "${GCP_PROJECT_ID:?Set GCP_PROJECT_ID before running the one-time bootstrap}"
 : "${WIREGUARD_CLIENT_PUBLIC_KEY:?Set WIREGUARD_CLIENT_PUBLIC_KEY before running the one-time bootstrap}"
-: "${WIREGUARD_ALLOWED_SOURCE_CIDR:?Set WIREGUARD_ALLOWED_SOURCE_CIDR to the administrator public IP/32}"
+: "${WIREGUARD_ALLOWED_SOURCE_CIDR:=0.0.0.0/0}"
+export WIREGUARD_ALLOWED_SOURCE_CIDR
 
 repository="Andarol/Test_Task"
 root="$(git rev-parse --show-toplevel)"

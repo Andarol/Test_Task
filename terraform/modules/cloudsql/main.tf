@@ -20,13 +20,6 @@ resource "google_secret_manager_secret_version" "database_password" {
   secret_data = random_password.database.result
 }
 
-resource "google_secret_manager_secret_iam_member" "application" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.database_password.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "principal://iam.googleapis.com/projects/${var.project_number}/locations/global/workloadIdentityPools/${var.project_id}.svc.id.goog/subject/ns/${var.kubernetes_namespace}/sa/${var.kubernetes_service_account}"
-}
-
 resource "google_sql_database_instance" "this" {
   project             = var.project_id
   name                = var.name

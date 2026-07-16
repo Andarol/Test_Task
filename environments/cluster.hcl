@@ -1,6 +1,6 @@
 locals {
   environment = read_terragrunt_config(find_in_parent_folders("environment.hcl"))
-  region      = basename(path_relative_to_include())
+  region      = basename(dirname(path_relative_to_include()))
   regional    = local.environment.locals.regions[local.region]
   project_id  = local.environment.locals.project_id
 }
@@ -16,31 +16,28 @@ remote_state {
   config = {
     project              = local.project_id
     bucket               = "${local.project_id}-order-service-tfstate"
-    prefix               = "${path_relative_to_include()}/terraform.tfstate"
+    # Preserve the existing state address while exposing an explicit cluster directory.
+    prefix               = "${local.environment.locals.environment}/${local.region}/terraform.tfstate"
     location             = "EU"
     skip_bucket_creation = true
   }
 }
 
 terraform {
-  source = "../../../terraform//stacks/regional"
+  source = "../../../../terraform//stacks/cluster"
 }
 
 dependency "foundation" {
-  config_path = "../foundation"
+  config_path = "../../foundation"
   mock_outputs = {
     network_id                  = "projects/mock/global/networks/order-mock-vpc"
     network_name                = "order-mock-vpc"
-    cloudsql_private_ip         = "10.90.0.10"
     database_password_secret_id = "order-mock-postgres-password"
     database_service_cidr       = "10.90.0.0/16"
-    redis_host                  = "10.90.1.10"
-    redis_port                  = 6378
     redis_auth_secret_id        = "order-mock-redis-auth"
     redis_ca_secret_id          = "order-mock-redis-ca"
     management_subnet_cidr      = "10.0.0.0/24"
     vpn_client_cidr             = "10.250.0.0/24"
-    image_repository            = "europe-west3-docker.pkg.dev/mock/order-service/order-service"
   }
   mock_outputs_allowed_terraform_commands = ["validate"]
 }
@@ -53,13 +50,9 @@ inputs = merge(local.environment.locals.common_inputs, {
   pod_cidr                    = local.regional.pod_cidr
   service_cidr                = local.regional.service_cidr
   database_service_cidr       = dependency.foundation.outputs.database_service_cidr
-  cloudsql_private_ip         = dependency.foundation.outputs.cloudsql_private_ip
   database_password_secret_id = dependency.foundation.outputs.database_password_secret_id
-  redis_host                  = dependency.foundation.outputs.redis_host
-  redis_port                  = dependency.foundation.outputs.redis_port
   redis_auth_secret_id        = dependency.foundation.outputs.redis_auth_secret_id
   redis_ca_secret_id          = dependency.foundation.outputs.redis_ca_secret_id
-  image_repository            = dependency.foundation.outputs.image_repository
   master_cidr                 = local.regional.master_cidr
   gke_machine_type            = local.regional.gke_machine_type
   gke_node_locations          = local.regional.zones

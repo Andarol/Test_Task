@@ -1,182 +1,30 @@
-name: Manual two-environment provision and deploy
+name: Manual application release
 
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
-        description: Environment to deploy
+        description: GitOps environment to release
         required: true
-        default: all
         type: choice
         options:
-          - all
           - staging
           - production
 
 concurrency:
-  group: order-service-${{ github.workflow }}-${{ github.ref }}
+  group: order-service-release-${{ inputs.environment }}
   cancel-in-progress: false
 
 permissions:
-  contents: read
-
-env:
-  TF_IN_AUTOMATION: "true"
-  TF_INPUT: "false"
-  TERRAGRUNT_NON_INTERACTIVE: "true"
+  contents: write
+  id-token: write
 
 jobs:
-  validate:
-    name: Static validation and race tests
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, gcp, ci]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - run: test -z "$(gofmt -l .)"
-      - run: go vet ./...
-      - run: go test -race -coverprofile=coverage.out ./...
-      - uses: hashicorp/setup-terraform@v3
-      - uses: ./.github/actions/setup-terragrunt
-      - run: terraform fmt -check -recursive terraform
-      - run: terragrunt hcl fmt --check
-      - uses: azure/setup-helm@v4
-      - name: Validate reusable Terraform stacks
-        run: |
-          for stack in management regional foundation global platform; do
-            terraform -chdir="terraform/stacks/$stack" init -backend=false
-            terraform -chdir="terraform/stacks/$stack" validate
-          done
-          terraform -chdir=terraform/bootstrap init -backend=false
-          terraform -chdir=terraform/bootstrap validate
-      - name: Validate GitOps charts offline
-        run: |
-          helm lint charts/order-service
-          helm lint charts/app-of-apps
-          helm lint terraform/stacks/platform/charts/root-application
-          helm template order-service charts/order-service >/dev/null
-          helm template app-of-apps charts/app-of-apps >/dev/null
-          helm template root-application terraform/stacks/platform/charts/root-application >/dev/null
-      - run: jq empty observability/dashboard.json
-
-  plan:
-    name: Plan ${{ matrix.environment }}/${{ matrix.component }}
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    needs: validate
-    runs-on: [self-hosted, linux, gcp, ci]
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: write
-    strategy:
-      fail-fast: false
-      matrix:
-        environment: [staging, production]
-        component: [foundation, europe-west3, europe-west3/platform, global]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-      - uses: ./.github/actions/setup-terragrunt
-      - uses: google-github-actions/auth@v3
-        with:
-          project_id: ${{ matrix.environment == 'staging' && vars.GCP_STAGING_PROJECT_ID || vars.GCP_PRODUCTION_PROJECT_ID }}
-          workload_identity_provider: ${{ matrix.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
-          service_account: ${{ matrix.environment == 'staging' && vars.GCP_STAGING_TERRAFORM_SA || vars.GCP_PRODUCTION_TERRAFORM_SA }}
-      - name: Plan
-        env:
-          GCP_PROJECT_ID: ${{ matrix.environment == 'staging' && vars.GCP_STAGING_PROJECT_ID || vars.GCP_PRODUCTION_PROJECT_ID }}
-        working-directory: environments/${{ matrix.environment }}/${{ matrix.component }}
-        run: terragrunt run -- plan -lock-timeout=5m -no-color -out=plan.tfplan | tee plan.txt
-      - name: Comment plan
-        if: always() && hashFiles(format('environments/{0}/{1}/plan.txt', matrix.environment, matrix.component)) != ''
-        uses: actions/github-script@v7
-        env:
-          PLAN_FILE: environments/${{ matrix.environment }}/${{ matrix.component }}/plan.txt
-          PLAN_NAME: ${{ matrix.environment }}/${{ matrix.component }}
-        with:
-          script: |
-            const fs = require('fs');
-            const raw = fs.readFileSync(process.env.PLAN_FILE, 'utf8');
-            const plan = raw.length > 60000 ? `${raw.slice(0, 60000)}\n...truncated` : raw;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `### Terragrunt plan: ${process.env.PLAN_NAME}\n\n<details><summary>Show plan</summary>\n\n\`\`\`hcl\n${plan}\n\`\`\`\n</details>`
-            });
-
-  build-image:
-    name: Build and push immutable image
-    if: github.event_name == 'workflow_dispatch'
-    needs: validate
-    runs-on: [self-hosted, linux, gcp, ci]
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      REGION: europe-west3
-      PROJECT_ID: ${{ vars.GCP_STAGING_PROJECT_ID }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v3
-        with:
-          project_id: ${{ vars.GCP_STAGING_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_STAGING_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_STAGING_DEPLOY_SA }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
-      - id: image
-        name: Check immutable image
-        env:
-          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/order-service/order-service:${{ github.sha }}
-        run: |
-          if gcloud artifacts docker images describe "$IMAGE" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: docker/setup-buildx-action@v3
-        if: steps.image.outputs.exists != 'true'
-      - uses: docker/build-push-action@v6
-        if: steps.image.outputs.exists != 'true'
-        with:
-          context: .
-          push: true
-          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/order-service/order-service:${{ github.sha }}
-          provenance: true
-          sbom: true
-
-  deploy-staging:
-    name: Deploy staging
-    if: github.event_name == 'workflow_dispatch' && (inputs.environment == 'all' || inputs.environment == 'staging')
-    needs: [validate, build-image]
-    permissions:
-      contents: read
-      id-token: write
+  release:
+    name: Release ${{ inputs.environment }}
     uses: ./.github/workflows/deploy-environment.yml
     with:
-      environment: staging
-      image_tag: ${{ github.sha }}
-
-  deploy-production:
-    name: Deploy production
-    if: >-
-      always() &&
-      github.event_name == 'workflow_dispatch' &&
-      needs.validate.result == 'success' &&
-      needs.build-image.result == 'success' &&
-      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') &&
-      (inputs.environment == 'all' || inputs.environment == 'production')
-    needs: [validate, build-image, deploy-staging]
+      environment: ${{ inputs.environment }}
     permissions:
-      contents: read
+      contents: write
       id-token: write
-    uses: ./.github/workflows/deploy-environment.yml
-    with:
-      environment: production
-      image_tag: ${{ github.sha }}
