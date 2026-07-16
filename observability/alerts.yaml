@@ -1,0 +1,87 @@
+apiVersion: monitoring.googleapis.com/v1
+kind: Rules
+metadata:
+  name: order-service-alerts
+  namespace: order-service
+  labels:
+    app.kubernetes.io/name: order-service
+spec:
+  groups:
+    - name: order-service.alerts
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            sum(rate(http_requests_total{service="order-service",status_code=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total{service="order-service"}[5m])), 0.001)
+            > 0.01
+          for: 5m
+          labels:
+            severity: critical
+            service: order-service
+          annotations:
+            summary: Order service error rate exceeds 1%
+            description: More than 1% of order-service requests have returned 5xx for at least five minutes.
+            runbook_url: https://github.com/OWNER/REPOSITORY/blob/main/runbooks/high-error-rate.md
+        - alert: HighP99Latency
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (le) (rate(http_request_duration_seconds_bucket{service="order-service"}[5m]))
+            ) > 1
+          for: 10m
+          labels:
+            severity: warning
+            service: order-service
+          annotations:
+            summary: Order service p99 latency exceeds one second
+            description: The request latency p99 has remained above one second for at least ten minutes.
+            runbook_url: https://github.com/OWNER/REPOSITORY/blob/main/runbooks/high-latency.md
+        - alert: ErrorBudgetBurnRateHigh
+          expr: order_service:error_budget_burn_rate:ratio_1h > 5
+          for: 5m
+          labels:
+            severity: critical
+            service: order-service
+          annotations:
+            summary: Order service is burning error budget faster than 5x
+            description: The one-hour availability error ratio is consuming the 30-day 99.9% error budget at more than five times the sustainable rate.
+            runbook_url: https://github.com/OWNER/REPOSITORY/blob/main/runbooks/high-error-rate.md
+        - alert: PodCrashLooping
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="order-service",container="order-service"}[15m]) > 3
+          labels:
+            severity: warning
+            service: order-service
+          annotations:
+            summary: An order-service pod is repeatedly restarting
+            description: Pod {{ $labels.pod }} restarted more than three times during the last 15 minutes.
+            runbook_url: https://github.com/OWNER/REPOSITORY/blob/main/runbooks/pod-crash-looping.md
+        - alert: DatabaseConnectionPoolNearExhaustion
+          expr: |
+            (
+              db_pool_connections_max{service="order-service"}
+              - db_pool_connections_in_use{service="order-service"}
+            )
+            /
+            clamp_min(db_pool_connections_max{service="order-service"}, 1)
+            < 0.10
+          for: 5m
+          labels:
+            severity: critical
+            service: order-service
+          annotations:
+            summary: Order service database pool has less than 10% capacity
+            description: Fewer than 10% of database connections have been available for at least five minutes.
+            runbook_url: https://github.com/OWNER/REPOSITORY/blob/main/runbooks/database-pool-exhaustion.md
+        - alert: RedisCacheDegraded
+          expr: |
+            sum(increase(cache_requests_total{service="order-service",result="error"}[10m])) > 20
+          for: 5m
+          labels:
+            severity: warning
+            service: order-service
+          annotations:
+            summary: Shared Redis cache is degraded
+            description: More than 20 Redis operations failed during a ten-minute window; requests are bypassing the cache and database load may increase.
+            runbook_url: https://github.com/OWNER/REPOSITORY/blob/main/runbooks/redis-cache-degraded.md

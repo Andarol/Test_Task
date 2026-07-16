@@ -1,0 +1,13 @@
+.DS_Store
+.terraform/
+.terragrunt-cache/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+terraform.tfvars
+*.auto.tfvars
+gha-creds-*.json
+.rendered/
+coverage.out
+/order-service

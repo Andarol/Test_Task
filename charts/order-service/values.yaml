@@ -1,0 +1,39 @@
+image:
+  repository: ""
+  tag: latest
+  pullPolicy: IfNotPresent
+
+projectId: ""
+region: europe-west3
+negName: order-service
+
+replicaCount: 4
+cacheTTL: 60s
+
+database:
+  host: ""
+  port: 5432
+  name: orders
+  user: order_service
+  cidr: 10.90.0.0/16
+  secretId: ""
+
+redis:
+  host: ""
+  port: 6378
+  authSecretId: ""
+  caSecretId: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  minReplicas: 4
+  maxReplicas: 30
+  cpuUtilization: 65
+  memoryUtilization: 75

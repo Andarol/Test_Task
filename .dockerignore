@@ -1,0 +1,11 @@
+.git
+.github
+.terraform
+terraform
+environments
+charts
+observability
+runbooks
+*.md
+coverage.out
+gha-creds-*.json

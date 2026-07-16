@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "order-service.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "order-service.labels" . | nindent 4 }}
+  annotations:
+    cloud.google.com/neg: {{ printf "{\"exposed_ports\":{\"80\":{\"name\":\"%s\"}}}" .Values.negName | quote }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "order-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

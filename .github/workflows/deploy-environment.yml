@@ -1,0 +1,84 @@
+name: Deploy environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Deployment environment defined under environments/
+        required: true
+        type: string
+      image_tag:
+        description: Immutable image tag built once by the bootstrap runner
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAGRUNT_NON_INTERACTIVE: "true"
+  REGION: europe-west3
+  PROJECT_ID: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_PROJECT_ID || vars.GCP_PRODUCTION_PROJECT_ID }}
+  WIF_PROVIDER: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
+  TERRAFORM_SA: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_TERRAFORM_SA || vars.GCP_PRODUCTION_TERRAFORM_SA }}
+
+jobs:
+  apply-infrastructure:
+    name: Apply ${{ inputs.environment }} infrastructure
+    runs-on: [self-hosted, linux, gcp, ci]
+    environment: ${{ format('{0}-infrastructure', inputs.environment) }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/terragrunt-apply
+        with:
+          environment: ${{ inputs.environment }}
+          working_directories: |
+            environments/${{ inputs.environment }}/foundation
+            environments/${{ inputs.environment }}/europe-west3
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TERRAFORM_SA }}
+
+  apply-platform:
+    name: Apply ${{ inputs.environment }} Rancher and Argo CD
+    needs: apply-infrastructure
+    runs-on: [self-hosted, linux, gcp, europe-west3]
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/terragrunt-apply
+        with:
+          environment: ${{ inputs.environment }}
+          working_directories: environments/${{ inputs.environment }}/europe-west3/platform
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TERRAFORM_SA }}
+          image_tag: ${{ inputs.image_tag }}
+
+  apply-global-infrastructure:
+    name: Apply ${{ inputs.environment }} global load balancer
+    needs: apply-platform
+    runs-on: [self-hosted, linux, gcp, ci]
+    environment: ${{ format('{0}-infrastructure', inputs.environment) }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/terragrunt-apply
+        with:
+          environment: ${{ inputs.environment }}
+          working_directories: environments/${{ inputs.environment }}/global
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TERRAFORM_SA }}
+          attempts: "10"
+          retry_delay_seconds: "30"
