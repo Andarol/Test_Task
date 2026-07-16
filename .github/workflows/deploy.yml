@@ -1,18 +1,10 @@
-name: Manual application release
+name: Deploy staging
 
 on:
   workflow_dispatch:
-    inputs:
-      environment:
-        description: GitOps environment to release
-        required: true
-        type: choice
-        options:
-          - staging
-          - production
 
 concurrency:
-  group: order-service-release-${{ inputs.environment }}
+  group: order-service-release-staging
   cancel-in-progress: false
 
 permissions:
@@ -21,10 +13,12 @@ permissions:
 
 jobs:
   release:
-    name: Release ${{ inputs.environment }}
+    name: Build and deploy staging
     uses: ./.github/workflows/deploy-environment.yml
     with:
-      environment: ${{ inputs.environment }}
+      environment: staging
+      build_image: true
+      image_tag: ${{ github.sha }}
     permissions:
       contents: write
       id-token: write

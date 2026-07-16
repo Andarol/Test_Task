@@ -10,7 +10,7 @@ output "network_name" {
 
 output "management_subnet_cidr" {
   value       = var.management_subnet_cidr
-  description = "CIDR containing the self-hosted runner."
+  description = "CIDR containing the management resources."
 }
 
 output "vpn_client_cidr" {

@@ -59,6 +59,7 @@ jobs:
       reset_cluster: ${{ inputs.reset_cluster }}
       import_cluster_resources: ${{ inputs.import_cluster_resources }}
       import_node_pool_only: ${{ inputs.import_node_pool_only }}
+    secrets: inherit
     permissions:
       contents: read
       id-token: write

@@ -45,6 +45,8 @@ locals {
     "roles/compute.networkAdmin",
     "roles/compute.securityAdmin",
     "roles/compute.instanceAdmin.v1",
+    "roles/compute.storageAdmin",
+    "roles/iap.tunnelResourceAccessor",
     "roles/container.admin",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.serviceAccountUser",

@@ -49,6 +49,31 @@ variable "gitops_values_file" {
   description = "Repository-relative values file consumed directly by the Argo CD root application."
 }
 
+variable "arc_enabled" {
+  type        = bool
+  description = "Whether to install the Actions Runner Controller scale set."
+  default     = false
+}
+
+variable "arc_github_token" {
+  type        = string
+  description = "Short-lived or fine-grained GitHub token used by ARC to manage repository runners."
+  sensitive   = true
+  default     = ""
+}
+
+variable "arc_runner_image" {
+  type        = string
+  description = "Immutable custom ARC runner image reference."
+  default     = "ghcr.io/actions/actions-runner:2.335.1"
+}
+
+variable "arc_chart_version" {
+  type        = string
+  description = "Pinned Actions Runner Controller chart version."
+  default     = "0.12.1"
+}
+
 variable "cert_manager_chart_version" {
   type        = string
   description = "Pinned cert-manager Helm chart version."

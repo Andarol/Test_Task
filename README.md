@@ -2,20 +2,19 @@
 
 The repository has three deliberately separate lifecycles:
 
-1. `environments/bootstrap/runner` creates the shared VPN, registry, and persistent self-hosted GitHub runner once.
+1. `environments/bootstrap/runner` creates the shared VPN and Artifact Registry repositories once.
 2. `.github/workflows/provision-infrastructure.yml` applies exactly one long-lived Terragrunt component selected by the operator: `foundation`, `cluster`, `gitops`, or `global`.
-3. `.github/workflows/deploy.yml` builds an immutable application image and changes only the matching file under `gitops/environments/`. Argo CD then reconciles the custom Helm chart from Git.
+3. `.github/workflows/build-runner.yml` builds a commit-versioned ARC runner image on a GitHub-hosted builder.
+4. `.github/workflows/deploy.yml` runs on an ephemeral ARC runner, builds and deploys staging, and `.github/workflows/promote-production.yml` manually promotes the tested immutable image to production. Argo CD then reconciles the custom Helm chart from Git.
 
-An application release never applies Terraform and never calls `kubectl apply`. No container is started on the operator laptop; image builds run on the GCP self-hosted runner.
+An application release never applies Terraform and never calls `kubectl apply`. No container is started on the operator laptop; ARC creates a short-lived runner pod inside the private GKE cluster only when a job is queued.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
   Admin["Administrator"] -->|"one WireGuard VPN"| VPN["WireGuard gateway"]
-  Runner["Persistent self-hosted GitHub runner"] --> Registry["Artifact Registry"]
-  Runner --> StageAPI["Staging private GKE API"]
-  Runner --> ProdAPI["Production private GKE API"]
+  Builder["GitHub-hosted image builder"] --> RunnerRegistry["Runner image repository"]
   VPN --> StageAPI
   VPN --> ProdAPI
 
@@ -23,6 +22,7 @@ flowchart TB
     StageAPI --> StageWorkers["Workers in zones a + b"]
     StageWorkers --> StageArgo["Argo CD"]
     StageWorkers --> StageRancher["Rancher"]
+    StageWorkers --> StageARC["ARC runner scale set"]
     StageWorkers --> StageApp["order-service custom chart"]
     StageApp --> StageDB["Regional HA Cloud SQL"]
     StageApp --> StageRedis["Redis cache"]
@@ -32,10 +32,13 @@ flowchart TB
     ProdAPI --> ProdWorkers["Workers in zones a + b"]
     ProdWorkers --> ProdArgo["Argo CD"]
     ProdWorkers --> ProdRancher["Rancher"]
+    ProdWorkers --> ProdARC["ARC runner scale set"]
   end
 
   Git["gitops/environments/ENV/values.yaml"] --> StageArgo
   Git --> ProdArgo
+  StageARC --> Registry["Application Artifact Registry"]
+  Builder --> Registry
 ```
 
 GKE manages the regional control planes. Terraform manages a separate autoscaling worker pool spread across two zones. The cluster state is long-lived and is not touched by normal application releases.
@@ -44,7 +47,7 @@ GKE manages the regional control planes. Terraform manages a separate autoscalin
 
 ```text
 environments/
-├── bootstrap/runner/terragrunt.hcl          # one-time runner/VPN bootstrap
+├── bootstrap/runner/terragrunt.hcl          # one-time VPN/registry bootstrap
 ├── staging/
 │   ├── foundation/terragrunt.hcl            # Cloud SQL and Redis
 │   ├── europe-west3/
@@ -80,7 +83,7 @@ production/europe-west3/platform/terraform.tfstate
 
 The directory names are now explicit while existing cloud resources remain attached to their original states.
 
-## One-time runner bootstrap
+## ARC runner bootstrap
 
 Requirements are Terraform 1.10+, Terragrunt 1.0.4+, authenticated `gcloud` and `gh`, plus `wg` for generating the administrator key. Docker is not required locally.
 
@@ -91,8 +94,33 @@ wg genkey | tee ~/.config/wireguard/order-client.key |
 
 export GCP_PROJECT_ID="project-03272afe-c622-4c2b-868"
 export WIREGUARD_CLIENT_PUBLIC_KEY="$(cat ~/.config/wireguard/order-client.pub)"
-make bootstrap-runner
+make bootstrap-management
 ```
+
+The `Build ARC runner image` workflow publishes
+`europe-west3-docker.pkg.dev/<project>/order-service/runner:<commit>`.
+The image contains the pinned Actions Runner, Terraform, Terragrunt, gcloud,
+kubectl, Helm and Docker CLI. It is built remotely; Docker is not required
+locally.
+
+After the cluster exists, configure the GitHub token and image reference for
+the GitOps component and apply it once from the existing bootstrap runner:
+
+```bash
+export ARC_ENABLED=true
+export GITHUB_ARC_TOKEN="<fine-grained token with repository administration>"
+export ARC_RUNNER_IMAGE="europe-west3-docker.pkg.dev/<project>/order-service/runner:<commit>"
+```
+
+For the manual infrastructure workflow, store the same values as repository
+configuration: variable `ARC_ENABLED=true`, variable `ARC_RUNNER_IMAGE`, and
+secret `ARC_GITHUB_TOKEN`.
+
+Terraform installs the ARC controller and one scale set named `arc-staging` or
+`arc-production`. The scale set keeps zero idle runners and creates at most one
+ephemeral runner pod, so it does not consume a permanent Compute Engine VM.
+The token is passed as a sensitive Terraform variable and is never baked into
+the runner image.
 
 UDP/51820 accepts connections from dynamic public addresses because the administrator uses DHCP. WireGuard still admits only the configured cryptographic peer.
 
@@ -112,12 +140,18 @@ Production application reconciliation is disabled in `gitops/environments/produc
 
 ## Application release
 
-Run `Manual application release` and choose `staging` or `production`. The reusable environment workflow:
+Run `Deploy staging`. It verifies the Go application, builds one immutable
+image tagged with the commit SHA, and updates only staging GitOps values. After
+staging validation, run `Promote tested image to production` manually and
+provide the exact 40-character image tag. Promotion reuses the staging image;
+it never rebuilds the application.
+
+The reusable environment workflow is:
 
 ```text
-verify Go code → build/push GIT_SHA → update gitops values → push main
-                                                        ↓
-                                                 Argo CD sync
+staging: verify → build/push GIT_SHA → update staging values → Argo CD sync
+                                                               ↓
+production: manual approval → reuse GIT_SHA → update production values
 ```
 
 Only the image tag changes during a normal release. Terraform owns Rancher, Argo CD, and the root Application; Argo CD exclusively owns the application chart and observability resources.

@@ -1,0 +1,30 @@
+name: Promote tested image to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Tested immutable image tag from the staging deployment
+        required: true
+        type: string
+
+concurrency:
+  group: order-service-promotion-production
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  promote:
+    name: Promote tested image to production
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: production
+      build_image: false
+      image_tag: ${{ inputs.image_tag }}
+    secrets: inherit
+    permissions:
+      contents: write
+      id-token: write

@@ -1,7 +1,9 @@
-.PHONY: test fmt terraform-fmt terraform-validate terragrunt-check charts-validate bootstrap-runner
+.PHONY: test fmt terraform-fmt terraform-validate terragrunt-check charts-validate bootstrap-management bootstrap-runner
 
-bootstrap-runner:
-	./scripts/bootstrap-runner.sh
+bootstrap-management:
+	./scripts/bootstrap-management.sh
+
+bootstrap-runner: bootstrap-management
 
 test:
 	go test -race ./...

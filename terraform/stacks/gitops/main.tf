@@ -141,6 +141,168 @@ resource "helm_release" "argocd" {
   })]
 }
 
+resource "helm_release" "arc_controller" {
+  count = var.arc_enabled ? 1 : 0
+
+  name             = "arc"
+  namespace        = "arc-systems"
+  create_namespace = true
+  repository       = "oci://ghcr.io/actions/actions-runner-controller-charts"
+  chart            = "gha-runner-scale-set-controller"
+  version          = var.arc_chart_version
+  atomic           = true
+  wait             = true
+  timeout          = 900
+
+  values = [yamlencode({
+    replicaCount = 1
+    resources = {
+      requests = {
+        cpu    = "50m"
+        memory = "128Mi"
+      }
+      limits = {
+        cpu    = "250m"
+        memory = "256Mi"
+      }
+    }
+  })]
+}
+
+resource "helm_release" "arc_runner_set" {
+  count = var.arc_enabled ? 1 : 0
+
+  name             = "arc-${var.environment}"
+  namespace        = "arc-runners"
+  create_namespace = true
+  repository       = "oci://ghcr.io/actions/actions-runner-controller-charts"
+  chart            = "gha-runner-scale-set"
+  version          = var.arc_chart_version
+  atomic           = true
+  wait             = true
+  timeout          = 900
+
+  values = [yamlencode({
+    githubConfigUrl = var.git_repository_url
+    githubConfigSecret = {
+      github_token = var.arc_github_token
+    }
+    minRunners = 0
+    maxRunners = 1
+    controllerServiceAccount = {
+      namespace = "arc-systems"
+      name      = "arc-gha-rs-controller"
+    }
+    template = {
+      spec = {
+        initContainers = [
+          {
+            name    = "init-dind-externals"
+            image   = var.arc_runner_image
+            command = ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+            volumeMounts = [
+              {
+                name      = "dind-externals"
+                mountPath = "/home/runner/tmpDir"
+              }
+            ]
+          },
+          {
+            name  = "dind"
+            image = "docker:27.5.1-dind"
+            args  = ["dockerd", "--host=unix:///var/run/docker.sock", "--group=$(DOCKER_GROUP_GID)"]
+            env = [{
+              name  = "DOCKER_GROUP_GID"
+              value = "123"
+            }]
+            securityContext = {
+              privileged = true
+            }
+            restartPolicy = "Always"
+            startupProbe = {
+              exec = {
+                command = ["docker", "info"]
+              }
+              failureThreshold    = 24
+              initialDelaySeconds = 0
+              periodSeconds       = 5
+            }
+            volumeMounts = [
+              {
+                name      = "work"
+                mountPath = "/home/runner/_work"
+              },
+              {
+                name      = "dind-sock"
+                mountPath = "/var/run"
+              },
+              {
+                name      = "dind-externals"
+                mountPath = "/home/runner/externals"
+              }
+            ]
+          }
+        ]
+        containers = [{
+          name    = "runner"
+          image   = var.arc_runner_image
+          command = ["/home/runner/run.sh"]
+          env = [
+            {
+              name  = "DOCKER_HOST"
+              value = "unix:///var/run/docker.sock"
+            },
+            {
+              name  = "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS"
+              value = "120"
+            }
+          ]
+          volumeMounts = [
+            {
+              name      = "work"
+              mountPath = "/home/runner/_work"
+            },
+            {
+              name      = "dind-sock"
+              mountPath = "/var/run"
+            },
+            {
+              name      = "dind-externals"
+              mountPath = "/home/runner/externals"
+            }
+          ]
+          resources = {
+            requests = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+            limits = {
+              cpu    = "1"
+              memory = "2Gi"
+            }
+          }
+        }]
+        volumes = [
+          {
+            name     = "work"
+            emptyDir = {}
+          },
+          {
+            name     = "dind-sock"
+            emptyDir = {}
+          },
+          {
+            name     = "dind-externals"
+            emptyDir = {}
+          }
+        ]
+      }
+    }
+  })]
+
+  depends_on = [helm_release.arc_controller]
+}
+
 resource "helm_release" "root_application" {
   name      = "order-service-root"
   namespace = "argocd"

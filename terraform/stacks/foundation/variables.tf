@@ -25,7 +25,7 @@ variable "private_service_range_name" {
 
 variable "management_subnet_cidr" {
   type        = string
-  description = "CIDR containing the self-hosted runner."
+  description = "CIDR containing the management resources."
 }
 
 variable "vpn_client_cidr" {

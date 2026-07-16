@@ -65,7 +65,7 @@ inputs = merge(local.environment.locals.common_inputs, {
   master_authorized_networks = [
     {
       cidr_block   = dependency.foundation.outputs.management_subnet_cidr
-      display_name = "self-hosted runner subnet"
+      display_name = "management subnet"
     },
     {
       cidr_block   = dependency.foundation.outputs.vpn_client_cidr

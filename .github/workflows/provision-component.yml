@@ -40,6 +40,9 @@ jobs:
       WIF_PROVIDER: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
       TERRAFORM_SA: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_TERRAFORM_SA || vars.GCP_PRODUCTION_TERRAFORM_SA }}
       REGION: europe-west3
+      ARC_ENABLED: ${{ vars.ARC_ENABLED || 'false' }}
+      GITHUB_ARC_TOKEN: ${{ secrets.ARC_GITHUB_TOKEN }}
+      ARC_RUNNER_IMAGE: ${{ vars.ARC_RUNNER_IMAGE }}
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v3

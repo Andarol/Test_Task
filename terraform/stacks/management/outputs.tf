@@ -10,7 +10,7 @@ output "network_name" {
 
 output "management_subnet_cidr" {
   value       = google_compute_subnetwork.management.ip_cidr_range
-  description = "CIDR containing the self-hosted runner."
+  description = "CIDR containing the management and VPN resources."
 }
 
 output "private_service_ranges" {
@@ -26,21 +26,6 @@ output "private_service_ranges" {
 output "image_repository" {
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.application.repository_id}/order-service"
   description = "Shared immutable application repository without tag."
-}
-
-output "runner_instance_name" {
-  value       = module.github_runner.instance_name
-  description = "One-time provisioned self-hosted runner VM."
-}
-
-output "runner_zone" {
-  value       = module.github_runner.instance_zone
-  description = "Zone containing the runner VM."
-}
-
-output "runner_registration_secret_id" {
-  value       = module.github_runner.registration_secret_id
-  description = "Secret used only to hand the short-lived registration token to the runner VM."
 }
 
 output "vpn_public_ip" {

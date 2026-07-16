@@ -44,4 +44,7 @@ inputs = merge(local.environment.locals.common_inputs, {
   rancher_hostname     = local.environment.locals.rancher_hostname
   argocd_hostname      = local.environment.locals.argocd_hostname
   gitops_values_file   = "gitops/environments/${local.environment.locals.environment}/values.yaml"
+  arc_enabled          = get_env("ARC_ENABLED", "false") == "true"
+  arc_github_token     = get_env("GITHUB_ARC_TOKEN", "")
+  arc_runner_image     = get_env("ARC_RUNNER_IMAGE", "${local.region}-docker.pkg.dev/${local.project_id}/order-service/runner:latest")
 })

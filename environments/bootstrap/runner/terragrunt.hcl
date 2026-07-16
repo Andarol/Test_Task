@@ -28,7 +28,6 @@ inputs = {
   region                          = "europe-west3"
   zone                            = "europe-west3-a"
   management_cidr                 = "10.0.0.0/24"
-  github_repository_url           = "https://github.com/Andarol/Test_Task"
   wireguard_client_public_key     = get_env("WIREGUARD_CLIENT_PUBLIC_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
   wireguard_allowed_source_ranges = [get_env("WIREGUARD_ALLOWED_SOURCE_CIDR", "0.0.0.0/0")]
   private_service_ranges = {

@@ -7,6 +7,14 @@ on:
         description: Environment under gitops/environments
         required: true
         type: string
+      build_image:
+        description: Build and push the application image before updating GitOps
+        required: true
+        type: boolean
+      image_tag:
+        description: Immutable image tag to deploy
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,8 +22,8 @@ permissions:
 
 jobs:
   release:
-    name: Build image and update GitOps
-    runs-on: [self-hosted, linux, gcp, ci]
+    name: Release tested image
+    runs-on: arc-${{ inputs.environment }}
     environment: ${{ inputs.environment }}
     env:
       REGION: europe-west3
@@ -23,17 +31,26 @@ jobs:
       WIF_PROVIDER: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_WIF_PROVIDER || vars.GCP_PRODUCTION_WIF_PROVIDER }}
       DEPLOY_SA: ${{ inputs.environment == 'staging' && vars.GCP_STAGING_DEPLOY_SA || vars.GCP_PRODUCTION_DEPLOY_SA }}
       VALUES_FILE: gitops/environments/${{ inputs.environment }}/values.yaml
+      IMAGE_TAG: ${{ inputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
+      - name: Validate immutable image tag
+        run: |
+          [[ "$IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "image_tag must be a 40-character commit SHA" >&2
+            exit 2
+          }
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
       - name: Verify application
+        if: inputs.build_image
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
@@ -48,17 +65,20 @@ jobs:
       - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
 
       - name: Build and push immutable image
+        if: inputs.build_image
         env:
-          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/order-service/order-service:${{ github.sha }}
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/order-service/order-service:${{ inputs.image_tag }}
         run: |
-          if ! gcloud artifacts docker images describe "$IMAGE" >/dev/null 2>&1; then
-            docker build --tag "$IMAGE" .
-            docker push "$IMAGE"
-          fi
+          docker build --tag "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Verify promoted image exists
+        if: ${{ !inputs.build_image }}
+        env:
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/order-service/order-service:${{ inputs.image_tag }}
+        run: docker manifest inspect "$IMAGE" >/dev/null
 
       - name: Record image in GitOps values
-        env:
-          IMAGE_TAG: ${{ github.sha }}
         run: |
           python3 - "$VALUES_FILE" "$IMAGE_TAG" <<'PY'
           from pathlib import Path
@@ -84,15 +104,16 @@ jobs:
       - name: Push GitOps release to main
         env:
           ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           if git diff --quiet -- "$VALUES_FILE"; then
-            echo "GitOps already references $GITHUB_SHA"
+            echo "GitOps already references $IMAGE_TAG"
             exit 0
           fi
           git config user.name "order-service-gitops[bot]"
           git config user.email "order-service-gitops[bot]@users.noreply.github.com"
           git add "$VALUES_FILE"
-          git commit -m "chore(gitops): deploy $ENVIRONMENT $GITHUB_SHA"
+          git commit -m "chore(gitops): deploy $ENVIRONMENT $IMAGE_TAG"
           git pull --rebase origin main
           git push origin HEAD:main
 

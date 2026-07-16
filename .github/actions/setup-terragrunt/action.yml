@@ -1,5 +1,5 @@
 name: Setup Terragrunt
-description: Install a pinned Terragrunt binary in the current self-hosted runner job
+description: Install a pinned Terragrunt binary in the current ARC runner job
 inputs:
   version:
     description: Terragrunt version without the v prefix

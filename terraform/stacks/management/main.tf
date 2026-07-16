@@ -59,20 +59,6 @@ resource "google_compute_router_nat" "management" {
   }
 }
 
-resource "google_compute_firewall" "iap_ssh" {
-  project       = var.project_id
-  name          = "order-management-iap-ssh"
-  network       = google_compute_network.management.name
-  direction     = "INGRESS"
-  source_ranges = ["35.235.240.0/20"]
-  target_tags   = ["iap-ssh", "github-runner"]
-
-  allow {
-    protocol = "tcp"
-    ports    = ["22"]
-  }
-}
-
 resource "google_compute_global_address" "private_services" {
   for_each = var.private_service_ranges
 
@@ -95,7 +81,7 @@ resource "google_artifact_registry_repository" "application" {
   project       = var.project_id
   location      = var.region
   repository_id = "order-service"
-  description   = "Immutable application images built by the self-hosted runner"
+  description   = "Immutable application images built by ARC runners"
   format        = "DOCKER"
   labels        = local.labels
 
@@ -121,22 +107,6 @@ resource "google_artifact_registry_repository" "application" {
       older_than = "2592000s"
     }
   }
-}
-
-module "github_runner" {
-  source = "../../modules/github-runner"
-
-  project_id            = var.project_id
-  name                  = "order-github-runner"
-  zone                  = var.zone
-  subnetwork_id         = google_compute_subnetwork.management.id
-  github_repository_url = var.github_repository_url
-  runner_labels         = ["gcp", "ci", var.region]
-  machine_type          = var.runner_machine_type
-  network_tags          = ["github-runner", "iap-ssh"]
-  labels                = local.labels
-
-  depends_on = [google_compute_router_nat.management]
 }
 
 module "wireguard" {

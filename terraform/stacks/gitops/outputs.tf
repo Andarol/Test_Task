@@ -17,3 +17,8 @@ output "argocd_root_application" {
   value       = "order-service-${var.environment}"
   description = "Argo CD app-of-apps root Application name."
 }
+
+output "arc_runner_scale_set" {
+  value       = "arc-${var.environment}"
+  description = "ARC runner scale set label used by GitHub Actions workflows."
+}
